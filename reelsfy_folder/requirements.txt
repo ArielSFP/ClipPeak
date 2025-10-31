@@ -1,0 +1,24 @@
+pytube
+opencv-python
+openai
+# git+https://github.com/m1guelpf/auto-subtitle.git
+python-dotenv
+opencv-contrib-python
+openai-whisper
+faster-whisper
+# CUDA libraries for faster-whisper (REQUIRED for GPU acceleration)
+# Note: faster-whisper will automatically use CUDA if PyTorch has CUDA support
+# For Hebrew model support
+transformers
+huggingface-hub
+# Modern face detection (faster and more accurate than Haar Cascade)
+mediapipe
+# Advanced Active Speaker Detection dependencies
+resemblyzer
+spectralcluster
+webrtcvad
+soundfile
+librosa
+# HTTP requests for downloading music and logos
+requests
+# Note: Silence detection and removal now uses ffmpeg's native silencedetect filter (no additional dependencies needed)
