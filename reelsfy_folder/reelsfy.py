@@ -72,6 +72,8 @@ GLOBAL_FACE_DETECTION = None
 GLOBAL_FACE_MESH = None
 GLOBAL_SYNCNET = None
 GLOBAL_VOICE_ENCODER = None
+GLOBAL_TALKNET = None
+GLOBAL_TALKNET_DET = None
 
 def report_progress(progress: int, stage: str, eta_seconds: int = None):
     """Helper function to report progress if callback is available."""
@@ -82,63 +84,82 @@ def report_progress(progress: int, stage: str, eta_seconds: int = None):
 
 def initialize_models():
     """Initialize all ML models at startup for better performance."""
-    global GLOBAL_FACE_DETECTION, GLOBAL_FACE_MESH, GLOBAL_SYNCNET, GLOBAL_VOICE_ENCODER
+    global GLOBAL_FACE_DETECTION, GLOBAL_FACE_MESH, GLOBAL_SYNCNET, GLOBAL_VOICE_ENCODER, GLOBAL_TALKNET, GLOBAL_TALKNET_DET
     
-    print("🚀 Initializing ML models for better performance...")
+    print("🚀 Initializing TalkNet (TESTING MODE - other models disabled)...")
     
     try:
-        # Initialize MediaPipe models
-        import mediapipe as mp
-        mp_face_det = mp.solutions.face_detection
-        mp_face_mesh = mp.solutions.face_mesh
+        # TESTING MODE: Only load TalkNet
+        # Other models are commented out for testing
         
-        print("  📷 Loading MediaPipe Face Detection...")
-        GLOBAL_FACE_DETECTION = mp_face_det.FaceDetection(
-            model_selection=1,  # 1 = full range (better for videos)
-            min_detection_confidence=0.5
-        )
+        # # Initialize MediaPipe models
+        # import mediapipe as mp
+        # mp_face_det = mp.solutions.face_detection
+        # mp_face_mesh = mp.solutions.face_mesh
+        # 
+        # print("  📷 Loading MediaPipe Face Detection...")
+        # GLOBAL_FACE_DETECTION = mp_face_det.FaceDetection(
+        #     model_selection=1,  # 1 = full range (better for videos)
+        #     min_detection_confidence=0.5
+        # )
+        # 
+        # print("  🎭 Loading MediaPipe Face Mesh...")
+        # GLOBAL_FACE_MESH = mp_face_mesh.FaceMesh(
+        #     static_image_mode=False, 
+        #     max_num_faces=5,
+        #     refine_landmarks=False, 
+        #     min_detection_confidence=0.5,
+        #     min_tracking_confidence=0.5
+        # )
         
-        print("  🎭 Loading MediaPipe Face Mesh...")
-        GLOBAL_FACE_MESH = mp_face_mesh.FaceMesh(
-            static_image_mode=False, 
-            max_num_faces=5,
-            refine_landmarks=False, 
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
+        # Initialize TalkNet for active speaker detection
+        import sys as system_module
+        print("  🎤 Loading TalkNet Active Speaker Detection...")
+        TALKNET_DIR = r"D:\ClipPeak\fast-asd\talknet"
+        TALKNET_MODEL = r"D:\ClipPeak\fast-asd\models\pretrain_TalkSet.model"
         
-        print("  ℹ️  Note: MediaPipe uses CPU on Windows (GPU acceleration not available)")
+        if not os.path.exists(TALKNET_DIR):
+            raise RuntimeError(f"TalkNet directory not found: {TALKNET_DIR}")
+        if not os.path.exists(TALKNET_MODEL):
+            raise RuntimeError(f"TalkNet model not found: {TALKNET_MODEL}")
         
-        # Initialize Resemblyzer Voice Encoder
-        print("  🎤 Loading Resemblyzer Voice Encoder...")
-        from resemblyzer import VoiceEncoder
-        GLOBAL_VOICE_ENCODER = VoiceEncoder()
+        system_module.path.insert(0, TALKNET_DIR)
+        from demoTalkNet import setup
+        GLOBAL_TALKNET, GLOBAL_TALKNET_DET = setup()
+        print("  ✅ TalkNet loaded successfully")
         
-        # Initialize SyncNet if available
-        SYNCNET_DIR = r"D:\ClipPeak\syncnet_repo"
-        SYNCNET_MODEL = r"D:\ClipPeak\syncnet_repo\syncnet_v2.model"
+        # # Initialize Resemblyzer Voice Encoder
+        # print("  🎤 Loading Resemblyzer Voice Encoder...")
+        # from resemblyzer import VoiceEncoder
+        # GLOBAL_VOICE_ENCODER = VoiceEncoder()
+        # 
+        # # Initialize SyncNet if available
+        # SYNCNET_DIR = r"D:\ClipPeak\syncnet_repo"
+        # SYNCNET_MODEL = r"D:\ClipPeak\syncnet_repo\syncnet_v2.model"
+        # 
+        # if os.path.exists(SYNCNET_DIR) and os.path.exists(SYNCNET_MODEL):
+        #     print("  🎬 Loading SyncNet model...")
+        #     import sys
+        #     sys.path.insert(0, SYNCNET_DIR)
+        #     from SyncNetInstance import SyncNetInstance
+        #     GLOBAL_SYNCNET = SyncNetInstance()
+        #     GLOBAL_SYNCNET.loadParameters(SYNCNET_MODEL)
+        #     GLOBAL_SYNCNET.eval()
+        #     print("  ✅ SyncNet loaded successfully")
+        # else:
+        #     print("  📝 SyncNet not available")
         
-        if os.path.exists(SYNCNET_DIR) and os.path.exists(SYNCNET_MODEL):
-            print("  🎬 Loading SyncNet model...")
-            import sys
-            sys.path.insert(0, SYNCNET_DIR)
-            from SyncNetInstance import SyncNetInstance
-            GLOBAL_SYNCNET = SyncNetInstance()
-            GLOBAL_SYNCNET.loadParameters(SYNCNET_MODEL)
-            GLOBAL_SYNCNET.eval()
-            print("  ✅ SyncNet loaded successfully")
-        else:
-            print("  📝 SyncNet not available")
-        
-        print("✅ All models initialized successfully!")
+        print("✅ TalkNet initialized successfully!")
         
     except Exception as e:
-        print(f"⚠️  Model initialization failed: {e}")
-        print("🔄 Models will be loaded individually during processing")
+        import traceback
+        print(f"❌ TalkNet initialization failed: {e}")
+        traceback.print_exc()
+        raise
 
 def cleanup_models():
     """Clean up global model instances."""
-    global GLOBAL_FACE_DETECTION, GLOBAL_FACE_MESH, GLOBAL_SYNCNET, GLOBAL_VOICE_ENCODER
+    global GLOBAL_FACE_DETECTION, GLOBAL_FACE_MESH, GLOBAL_SYNCNET, GLOBAL_VOICE_ENCODER, GLOBAL_TALKNET, GLOBAL_TALKNET_DET
     
     if GLOBAL_FACE_DETECTION:
         GLOBAL_FACE_DETECTION.close()
@@ -150,6 +171,8 @@ def cleanup_models():
     
     GLOBAL_SYNCNET = None
     GLOBAL_VOICE_ENCODER = None
+    GLOBAL_TALKNET = None
+    GLOBAL_TALKNET_DET = None
 
 
 # --- Helper function for interactive stage control ---
@@ -976,8 +999,8 @@ def generate_short(input_file: str, output_file: str, srt_path: str = None, dete
     Advanced active speaker detection with audio diarization:
       - Diarizes audio locally (Resemblyzer + SpectralCluster)
       - Builds face tracks (MediaPipe + OpenCV trackers)
-      - Assigns correct face track using SyncNet if available (fast, sampled evaluation)
-      - Falls back to mouth-movement heuristic if SyncNet isn't set up
+      - Assigns correct face track using TalkNet if available (best accuracy!)
+      - Falls back to mouth-movement heuristic if TalkNet isn't set up
       - Crops around active speaker with smoothing and quick snaps on speaker changes
       - Maintains 9:16 aspect ratio with 85% dead zone
       - Apply zoom effects when <zoom> tags are present in SRT
@@ -995,13 +1018,314 @@ def generate_short(input_file: str, output_file: str, srt_path: str = None, dete
         print(f"Skipping cropping, exists: {out_path}")
         return
 
-    # Try advanced active speaker detection, fall back to simple face tracking if it fails
+    # TESTING MODE: TalkNet only, no fallbacks
+    global GLOBAL_TALKNET, GLOBAL_TALKNET_DET
+    if GLOBAL_TALKNET is None or GLOBAL_TALKNET_DET is None:
+        raise RuntimeError("❌ TalkNet not loaded! Cannot proceed without TalkNet in testing mode.")
+    
+    print("🎯 Using TalkNet Active Speaker Detection (High Accuracy)")
+    return generate_short_with_talknet(in_path, out_path, srt_path, detect_every, ease, zoom_cues)
+    
+    # ORIGINAL CODE WITH FALLBACKS (currently disabled for testing):
+    # try:
+    #     global GLOBAL_TALKNET, GLOBAL_TALKNET_DET
+    #     if GLOBAL_TALKNET is not None and GLOBAL_TALKNET_DET is not None:
+    #         print("🎯 Using TalkNet Active Speaker Detection (High Accuracy)")
+    #         return generate_short_with_talknet(in_path, out_path, srt_path, detect_every, ease, zoom_cues)
+    #     else:
+    #         print("📝 TalkNet not available, using advanced ASD fallback")
+    #         return generate_short_advanced_asd(in_path, out_path, srt_path, detect_every, ease, zoom_cues)
+    # except Exception as e:
+    #     print(f"⚠️  Active speaker detection failed ({e})")
+    #     print("🔄 Falling back to simple face tracking...")
+    #     return generate_short_simple_fallback(in_path, out_path, srt_path, detect_every, ease, zoom_cues)
+
+def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = None, detect_every: int = 6, ease: float = 0.85, zoom_cues=None):
+    """
+    TalkNet-based active speaker detection for high-accuracy face tracking and cropping.
+    Uses the fast-asd TalkNet implementation to detect active speakers.
+    """
+    import os
+    import cv2
+    import numpy as np
+    import subprocess
+    import sys
+    
+    global GLOBAL_TALKNET, GLOBAL_TALKNET_DET
+    
+    # Configuration
+    DESIRED_ASPECT = 9/16  # Portrait 9:16
+    MARGIN = 0.28          # padding around face crop
+    SMOOTHING = min(0.95, ease + 0.1)  # Smoothing for stability
+    MIN_BOX = 0.30         # min relative width when face tiny
+    
+    print("🎤 TalkNet Active Speaker Detection")
+    print("="*60)
+    
+    # Get video properties
+    cap = cv2.VideoCapture(in_path)
+    if not cap.isOpened():
+        raise RuntimeError("Could not open video")
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    nF = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    
+    # Target crop size (portrait 9:16)
+    out_h = H
+    out_w = int(round(out_h * DESIRED_ASPECT))
+    if out_w > W:
+        out_w, out_h = W, int(round(W / DESIRED_ASPECT))
+    
+    # Run TalkNet detection
+    print("🔍 Running TalkNet active speaker detection...")
+    sys.path.insert(0, r"D:\ClipPeak\fast-asd\talknet")
+    from demoTalkNet import main as talknet_main
+    
+    # Check if we should generate debug visualization
+    GENERATE_DEBUG_VIDEO = os.environ.get('TALKNET_DEBUG', 'true').lower() == 'true'
+    
     try:
-        return generate_short_advanced_asd(in_path, out_path, srt_path, detect_every, ease, zoom_cues)
+        # Run TalkNet on the video
+        if GENERATE_DEBUG_VIDEO:
+            print("📹 Generating TalkNet debug visualization...")
+            talknet_results, debug_video_path = talknet_main(
+                GLOBAL_TALKNET,
+                GLOBAL_TALKNET_DET,
+                in_path,
+                start_seconds=0,
+                end_seconds=-1,
+                return_visualization=True,  # Generate debug video
+                face_boxes="",
+                in_memory_threshold=5000
+            )
+            # Copy debug video to results folder for easy access
+            debug_output_path = out_path.replace('.mp4', '_talknet_debug.mp4')
+            if os.path.exists(debug_video_path):
+                import shutil
+                shutil.copy2(debug_video_path, debug_output_path)
+                print(f"✅ TalkNet debug video saved: {debug_output_path}")
+        else:
+            talknet_results = talknet_main(
+                GLOBAL_TALKNET,
+                GLOBAL_TALKNET_DET,
+                in_path,
+                start_seconds=0,
+                end_seconds=-1,
+                return_visualization=False,
+                face_boxes="",
+                in_memory_threshold=5000
+            )
+        print(f"✅ TalkNet detected {len(talknet_results)} frames with face data")
     except Exception as e:
-        print(f"⚠️  Advanced active speaker detection failed ({e})")
-        print("🔄 Falling back to simple face tracking...")
-        return generate_short_simple_fallback(in_path, out_path, srt_path, detect_every, ease, zoom_cues)
+        import traceback
+        print(f"❌ TalkNet detection failed: {e}")
+        print("Full traceback:")
+        traceback.print_exc()
+        raise RuntimeError(f"TalkNet detection failed. Cannot continue in testing mode.") from e
+    
+    # Parse TalkNet results to find active speaker per frame
+    def get_active_speaker_bbox(frame_idx):
+        """Get bounding box of active speaker for this frame."""
+        if frame_idx >= len(talknet_results):
+            return None
+        
+        frame_data = talknet_results[frame_idx]
+        if not frame_data['faces']:
+            return None
+        
+        # Find face with highest confidence score (speaking = True and highest raw_score)
+        speaking_faces = [f for f in frame_data['faces'] if f.get('speaking', False)]
+        if speaking_faces:
+            best_face = max(speaking_faces, key=lambda f: f.get('raw_score', 0))
+        else:
+            # No one speaking, pick largest face
+            best_face = max(frame_data['faces'], key=lambda f: (f['x2']-f['x1'])*(f['y2']-f['y1']))
+        
+        return (best_face['x1'], best_face['y1'], 
+                best_face['x2']-best_face['x1'], best_face['y2']-best_face['y1'])
+    
+    # Helper functions
+    def lerp(a, b, t):
+        return a*(1-t) + b*t
+    
+    def ema_bbox(prev, curr, alpha):
+        if prev is None:
+            return curr
+        return (lerp(prev[0], curr[0], 1-alpha),
+                lerp(prev[1], curr[1], 1-alpha),
+                lerp(prev[2], curr[2], 1-alpha),
+                lerp(prev[3], curr[3], 1-alpha))
+    
+    def clamp(v, lo, hi):
+        return max(lo, min(hi, v))
+    
+    def fit_aspect_with_margin(x, y, w, h, W, H, aspect, margin):
+        cx, cy = x + w/2, y + h/2
+        w_m = w * (1 + 2*margin)
+        h_m = h * (1 + 2*margin)
+        cur_aspect = w_m / max(1, h_m)
+        if cur_aspect > aspect:
+            h_m = w_m / aspect
+        else:
+            w_m = h_m * aspect
+        min_w = W * MIN_BOX
+        min_h = min_w / aspect
+        w_m = max(w_m, min_w)
+        h_m = max(h_m, min_h)
+        x0 = int(round(clamp(cx - w_m/2, 0, W-1)))
+        y0 = int(round(clamp(cy - h_m/2, 0, H-1)))
+        x1 = int(round(clamp(x0 + w_m, 0, W)))
+        y1 = int(round(clamp(y0 + h_m, 0, H)))
+        cw, ch = x1-x0, y1-y0
+        if cw / max(1, ch) > aspect:
+            new_w = int(ch * aspect)
+            x0 = clamp(x0 + (cw-new_w)//2, 0, W-new_w)
+            cw = new_w
+        else:
+            new_h = int(cw / aspect)
+            y0 = clamp(y0 + (ch-new_h)//2, 0, H-new_h)
+            ch = new_h
+        return x0, y0, cw, ch
+    
+    # Parse SRT for zoom timings
+    zoom_times = []
+    if srt_path and os.path.exists(srt_path):
+        zoom_times = extract_zoom_timings_from_srt(srt_path)
+    
+    def should_zoom(time_sec):
+        for start, end in zoom_times:
+            if start <= time_sec <= end:
+                return True
+        return False
+    
+    # Generate cropped frames
+    print("🎬 Generating cropped frames...")
+    frames_dir = os.path.join("tmp", f"__frames_{os.path.basename(out_path)}")
+    os.makedirs(frames_dir, exist_ok=True)
+    
+    cap = cv2.VideoCapture(in_path)
+    frame_idx = 0
+    smooth_bbox = None
+    prev_speaker_id = None
+    
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        
+        current_time = frame_idx / fps
+        target_box = get_active_speaker_bbox(frame_idx)
+        
+        # Detect speaker changes
+        current_speaker_id = None
+        if frame_idx < len(talknet_results) and talknet_results[frame_idx]['faces']:
+            speaking = [f for f in talknet_results[frame_idx]['faces'] if f.get('speaking', False)]
+            if speaking:
+                current_speaker_id = max(speaking, key=lambda f: f.get('raw_score', 0)).get('track_id')
+        
+        speaker_changed = (current_speaker_id != prev_speaker_id and current_speaker_id is not None)
+        
+        if target_box is None:
+            # No face detected, use center crop
+            w = int(W * MIN_BOX)
+            h = int(w / DESIRED_ASPECT)
+            target_box = ((W - w)//2, (H - h)//2, w, h)
+        
+        # Apply smoothing with deadzone
+        if speaker_changed:
+            smooth_bbox = target_box
+        else:
+            if smooth_bbox is not None:
+                cx, cy, cw, ch = fit_aspect_with_margin(*target_box, W, H, DESIRED_ASPECT, MARGIN)
+                face_cx = target_box[0] + target_box[2] // 2
+                face_cy = target_box[1] + target_box[3] // 2
+                
+                # Deadzone (50% of crop area)
+                deadzone_w = cw * 0.50
+                deadzone_h = ch * 0.50
+                deadzone_x = cx + (cw - deadzone_w) // 2
+                deadzone_y = cy + (ch - deadzone_h) // 2
+                
+                if (deadzone_x <= face_cx <= deadzone_x + deadzone_w and
+                    deadzone_y <= face_cy <= deadzone_y + deadzone_h):
+                    pass  # Face in deadzone, don't update
+                else:
+                    smooth_bbox = ema_bbox(smooth_bbox, target_box, SMOOTHING)
+            else:
+                smooth_bbox = target_box
+        
+        cx, cy, cw, ch = fit_aspect_with_margin(*smooth_bbox, W, H, DESIRED_ASPECT, MARGIN)
+        crop = frame[cy:cy+ch, cx:cx+cw]
+        
+        # Apply zoom if needed
+        if should_zoom(current_time):
+            zoom_factor = 1.05
+            zoomed_h = int(ch / zoom_factor)
+            zoomed_w = int(cw / zoom_factor)
+            start_y = (ch - zoomed_h) // 2
+            start_x = (cw - zoomed_w) // 2
+            zoomed_crop = crop[start_y:start_y+zoomed_h, start_x:start_x+zoomed_w]
+            crop = cv2.resize(zoomed_crop, (cw, ch))
+        
+        # Resize to final output
+        crop = cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+        
+        # Save frame
+        frame_path = os.path.join(frames_dir, f"frame_{frame_idx:06d}.png")
+        cv2.imwrite(frame_path, crop)
+        
+        prev_speaker_id = current_speaker_id
+        frame_idx += 1
+        
+        if frame_idx % 30 == 0:
+            progress = (frame_idx / nF) * 100
+            print(f"   Progress: {frame_idx}/{nF} frames ({progress:.1f}%)")
+    
+    cap.release()
+    print(f"✅ Finished processing {frame_idx} frames. Compiling video with FFmpeg...")
+    
+    # Compile frames into video
+    tmp_video_only = os.path.join("tmp", f"__tmp_tracked_{os.path.basename(out_path)}")
+    
+    cmd = [
+        'ffmpeg', '-y',
+        '-framerate', str(fps),
+        '-i', os.path.join(frames_dir, 'frame_%06d.png'),
+        '-c:v', 'h264_nvenc',
+        '-preset', 'fast',
+        '-pix_fmt', 'yuv420p',
+        tmp_video_only
+    ]
+    subprocess.run(cmd, check=True)
+    
+    # Remux with audio
+    import ffmpeg
+    (
+        ffmpeg
+        .output(
+            ffmpeg.input(tmp_video_only).video,
+            ffmpeg.input(in_path).audio,
+            out_path,
+            vcodec='h264_nvenc',
+            acodec='copy',
+            preset='fast'
+        )
+        .overwrite_output()
+        .run(quiet=False)
+    )
+    
+    # Cleanup
+    try:
+        import shutil
+        shutil.rmtree(frames_dir)
+        os.remove(tmp_video_only)
+    except:
+        pass
+    
+    print(f"✅ TalkNet processing complete: {out_path}")
+    return out_path
 
 def generate_short_advanced_asd(in_path: str, out_path: str, srt_path: str = None, detect_every: int = 6, ease: float = 0.85, zoom_cues=None):
     """
@@ -2261,18 +2585,15 @@ def generate_subtitle_for_clip(input_path: str, detected_language: str = None) -
     srt_path  = os.path.join('tmp', f"{base}.srt")
     old_path  = os.path.join('tmp', f"old_{base}.srt")
 
-    # If SRT already exists, just return the path without regenerating
-    if os.path.exists(srt_path):
-        print(f"SRT already exists for {base}, skipping generation")
-        return srt_path
-
-        # Create a fresh SRT using faster-whisper (with fallback to auto_subtitle)
+    # If SRT doesn't exist, create a fresh SRT using faster-whisper (with fallback to auto_subtitle)
+    if not os.path.exists(srt_path):
+        print(f"Generating new SRT for {base}...")
         try:
             transcribe_clip_with_faster_whisper(input_path, detected_language)
         except Exception as e:
             print(f"Warning: transcription failed ({e}), trying auto_subtitle fallback")
-        cmd = f"auto_subtitle {input_path} --srt_only True -o tmp/ --model turbo"
-        subprocess.call(cmd, shell=True)
+            cmd = f"auto_subtitle {input_path} --srt_only True -o tmp/ --model turbo"
+            subprocess.call(cmd, shell=True)
         
         if os.path.exists(srt_path):
             try:
@@ -2280,6 +2601,8 @@ def generate_subtitle_for_clip(input_path: str, detected_language: str = None) -
                 print(f"Saved original SRT to {old_path}")
             except Exception as e:
                 print("Warning: failed to save original SRT copy:", e)
+    else:
+        print(f"SRT already exists for {base}, skipping generation")
 
     # Now (re)chunk to max 5 words per cue, min 1.0s, with RTL wrapping
     entries = parse_srt(srt_path)

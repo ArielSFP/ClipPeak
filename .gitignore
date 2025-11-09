@@ -1,2 +1,9 @@
 website/
 *.bat
+*.mp4
+*.srt
+*.ass
+*.wav
+*.avi
+*.pckl
+results/
