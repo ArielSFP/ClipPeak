@@ -1,0 +1,55 @@
+# Temporary processing files
+tmp/
+results/
+save/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Video files (don't bake into image)
+*.mp4
+*.avi
+*.wav
+*.pckl
+*.srt
+*.mp3
+
+# Documentation
+README.md
+*.md
+docs/
+
+# Environment files
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Logs
+*.log
+
+# Testing
+test/
+tests/
+*.test.py
+

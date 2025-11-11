@@ -7,3 +7,11 @@ website/
 *.avi
 *.pckl
 results/
+tmp/
+save/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.env.local

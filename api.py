@@ -9,10 +9,13 @@ from fastapi import FastAPI, BackgroundTasks
 from supabase import create_client
 from reelsfy_folder.reelsfy import process_video_file, process_export_file  # your existing script, refactored into importable functions
 
-# load your Supabase creds from env
-SUPABASE_URL = "https://bzyclxmakfklbxnsradh.supabase.co/"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ6eWNseG1ha2ZrbGJ4bnNyYWRoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTAwNTE2MTEsImV4cCI6MjA2NTYyNzYxMX0.2iHLGirSBn4__qnJ5gqIbUER1QHafmVHV5UMw4_qGYo"
+# Load Supabase credentials from environment variables (Cloud Run secrets)
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://bzyclxmakfklbxnsradh.supabase.co/")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ6eWNseG1ha2ZrbGJ4bnNyYWRoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTAwNTE2MTEsImV4cCI6MjA2NTYyNzYxMX0.2iHLGirSBn4__qnJ5gqIbUER1QHafmVHV5UMw4_qGYo")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+print(f"üîê Using Supabase URL: {SUPABASE_URL}")
+print(f"üîê Supabase key loaded: {SUPABASE_KEY[:20]}..." if SUPABASE_KEY else "üîê No Supabase key found")
 
 app = FastAPI()
 
@@ -30,6 +33,36 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Health check endpoint for Cloud Run
+@app.get("/")
+async def root():
+    """Root endpoint - returns service info."""
+    return {
+        "service": "ClipPeak Video Processing API",
+        "status": "running",
+        "version": "1.0.0"
+    }
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for monitoring and load balancer."""
+    try:
+        import torch
+        gpu_available = torch.cuda.is_available()
+        gpu_count = torch.cuda.device_count() if gpu_available else 0
+        gpu_name = torch.cuda.get_device_name(0) if gpu_available else "None"
+        
+        return {
+            "status": "healthy",
+            "gpu_available": gpu_available,
+            "gpu_count": gpu_count,
+            "gpu_name": gpu_name,
+            "supabase_connected": bool(SUPABASE_URL and SUPABASE_KEY),
+            "openai_configured": bool(os.environ.get("OPENAI_API_KEY"))
+        }
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}
 
 @app.post("/process-video")
 async def process_video(payload: dict, background_tasks: BackgroundTasks):
@@ -361,7 +394,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     if os.path.exists("tmp"):
         try:
             shutil.rmtree("tmp")
-            print("‚ú?Deleted tmp/ folder")
+            print("ÔøΩ?Deleted tmp/ folder")
         except Exception as e:
             print(f"‚ö†Ô∏è  Could not delete tmp/ folder: {e}")
     
@@ -369,7 +402,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     if os.path.exists("results"):
         try:
             shutil.rmtree("results")
-            print("‚ú?Deleted results/ folder")
+            print("ÔøΩ?Deleted results/ folder")
         except Exception as e:
             print(f"‚ö†Ô∏è  Could not delete results/ folder: {e}")
     
@@ -377,7 +410,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     if os.path.exists(local_in):
         try:
             os.remove(local_in)
-            print(f"‚ú?Deleted downloaded video: {local_in}")
+            print(f"ÔøΩ?Deleted downloaded video: {local_in}")
         except Exception as e:
             print(f"‚ö†Ô∏è  Could not delete {local_in}: {e}")
     
@@ -421,12 +454,12 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
                         except Exception as e:
                             print(f"‚ö†Ô∏è  Could not delete {file_path}: {e}")
             
-            print(f"‚ú?Deleted {deleted_count} TalkNet temporary files from save/ folder (including pyavi/ and pycrop/)")
+            print(f"ÔøΩ?Deleted {deleted_count} TalkNet temporary files from save/ folder (including pyavi/ and pycrop/)")
         except Exception as e:
             print(f"‚ö†Ô∏è  Could not access save/ folder: {e}")
     
     print("="*60)
-    print("‚ú?Cleanup complete!")
+    print("ÔøΩ?Cleanup complete!")
     print("="*60 + "\n")
     
     # Calculate and print total processing time
@@ -631,15 +664,15 @@ def run_export_processing(
                         if file_exists:
                             print(f"‚ö†Ô∏è  File already exists in Supabase: {video_filename}, deleting old version...")
                             supabase.storage.from_("processed-videos").remove([dest_path])
-                            print(f"‚ú?Deleted old file from Supabase: {video_filename}")
+                            print(f"ÔøΩ?Deleted old file from Supabase: {video_filename}")
                         else:
-                            print(f"‚ú?No existing file found in Supabase, will upload new file: {video_filename}")
+                            print(f"ÔøΩ?No existing file found in Supabase, will upload new file: {video_filename}")
                     except Exception as e:
                         print(f"‚ö†Ô∏è  Could not check/delete existing file (may not exist): {e}")
                     
                     # Upload the new file
                     supabase.storage.from_("processed-videos").upload(dest_path, local_path)
-                    print(f"‚ú?Uploaded final video: {video_filename} (from {fname})")
+                    print(f"ÔøΩ?Uploaded final video: {video_filename} (from {fname})")
                     
                 except ValueError as e:
                     print(f"‚ö†Ô∏è  Could not parse short index from filename {fname}: {e}")
@@ -670,7 +703,7 @@ def run_export_processing(
                         edited_srt_content.encode('utf-8'),
                         {"content-type": "text/plain"}
                     )
-                    print(f"‚ú?Uploaded edited SRT: {srt_filename}")
+                    print(f"ÔøΩ?Uploaded edited SRT: {srt_filename}")
                 except Exception as e:
                     print(f"Warning: Could not upload edited SRT {srt_filename}: {e}")
         print("Finished uploading final videos")
@@ -681,7 +714,7 @@ def run_export_processing(
             "status": "completed",
             "export_ready": True  # NEW: Notify frontend that export is ready
         }).eq("id", video_id).execute()
-        print(f"‚ú?Export processing completed for video {video_id}")
+        print(f"ÔøΩ?Export processing completed for video {video_id}")
         print(f"   Frontend will be notified via real-time subscription")
         
     except Exception as e:

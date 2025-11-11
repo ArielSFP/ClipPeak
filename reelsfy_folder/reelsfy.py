@@ -43,11 +43,17 @@ from openai import OpenAI
 import mediapipe as mp
 
 # --- Config / Keys ---
-OPENAI_API_KEY = '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'
+# Load from environment variable (Cloud Run secret) with fallback for local dev
+OPENAI_API_KEY = os.environ.get(
+    'OPENAI_API_KEY',
+    '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'
+)
 
 # Set up OpenAI client
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 OPENAI_NEW_API = True
+
+print(f"🔐 OpenAI API key loaded: {OPENAI_API_KEY[:20]}..." if OPENAI_API_KEY else "🔐 No OpenAI key found")
 
 # Global settings from frontend popup (set via process_video_file)
 PROCESSING_SETTINGS = {
@@ -87,15 +93,19 @@ def initialize_models():
     try:
         import sys as system_module
         print("  🎤 Loading TalkNet model...")
-        TALKNET_DIR = r"D:\ClipPeak\fast-asd\talknet"
-        TALKNET_MODEL = r"D:\ClipPeak\fast-asd\models\pretrain_TalkSet.model"
+        
+        # Use relative paths that work on both Windows and Linux
+        TALKNET_DIR = os.path.join("fast-asd", "talknet")
+        TALKNET_MODEL = os.path.join("fast-asd", "models", "pretrain_TalkSet.model")
         
         if not os.path.exists(TALKNET_DIR):
             raise RuntimeError(f"TalkNet directory not found: {TALKNET_DIR}")
         if not os.path.exists(TALKNET_MODEL):
             raise RuntimeError(f"TalkNet model not found: {TALKNET_MODEL}")
         
-        system_module.path.insert(0, TALKNET_DIR)
+        # Add to path using absolute path for reliability
+        talknet_abs_path = os.path.abspath(TALKNET_DIR)
+        system_module.path.insert(0, talknet_abs_path)
         from demoTalkNet import setup
         GLOBAL_TALKNET, GLOBAL_TALKNET_DET = setup()
         print("  ✅ TalkNet loaded successfully")
@@ -1059,7 +1069,8 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
     
     # Run TalkNet detection
     print("🔍 Running TalkNet active speaker detection...")
-    sys.path.insert(0, r"D:\ClipPeak\fast-asd\talknet")
+    talknet_dir = os.path.abspath(os.path.join("fast-asd", "talknet"))
+    sys.path.insert(0, talknet_dir)
     from demoTalkNet import main as talknet_main
     
     try:
