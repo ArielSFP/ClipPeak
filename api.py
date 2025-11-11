@@ -9,24 +9,6 @@ from fastapi import FastAPI, BackgroundTasks
 from supabase import create_client
 from reelsfy_folder.reelsfy import process_video_file, process_export_file  # your existing script, refactored into importable functions
 
-# Helper function for interactive stage control
-def prompt_stage(stage_name: str) -> bool:
-    """
-    Prompts user to continue or skip a stage.
-    Returns True if stage should be executed, False if skipped.
-    """
-    print(f"\n{'='*60}")
-    print(f"STAGE: {stage_name}")
-    print(f"{'='*60}")
-    user_input = input("Press ENTER to continue or type 'skip' to skip this stage: ").strip().lower()
-    
-    if user_input == 'skip':
-        print(f"⏭️  SKIPPED: {stage_name}\n")
-        return False
-    else:
-        print(f"▶️  RUNNING: {stage_name}\n")
-        return True
-
 # load your Supabase creds from env
 SUPABASE_URL = "https://bzyclxmakfklbxnsradh.supabase.co/"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ6eWNseG1ha2ZrbGJ4bnNyYWRoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTAwNTE2MTEsImV4cCI6MjA2NTYyNzYxMX0.2iHLGirSBn4__qnJ5gqIbUER1QHafmVHV5UMw4_qGYo"
@@ -131,11 +113,15 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     }
     is_short_video: Explicit flag for videos under 3 minutes
     """
+    # Start timing
+    start_time = time.time()
+    
     # 0) Find the video's UUID in the videos table
-    if not prompt_stage("Find video UUID in database"):
-        print("Skipped finding video UUID - aborting process")
-        return
-        
+    print("\n" + "="*60)
+    print("STAGE: Find video UUID in database")
+    print("="*60)
+    print("▶️  RUNNING: Find video UUID in database (auto-continue mode)\n")
+    
     time.sleep(5)
 
     resp = supabase.table("videos").select("id").eq("file_url", file_key).execute()
@@ -148,33 +134,36 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     update_progress(video_id, 0, "מתחיל עיבוד...")
 
     # 1) Download original video from Supabase Storage
-    if prompt_stage("Download original video from Supabase Storage"):
-        update_progress(video_id, 5, "מוריד סרטון מקורי...")
-        local_in = os.path.basename(file_key)
-        data = supabase.storage.from_(bucket).download(file_key)
-        if isinstance(data, bytes):
-            with open(local_in, "wb") as f:
-                f.write(data)
-        else:
-            content = data.read() if hasattr(data, "read") else data
-            with open(local_in, "wb") as f:
-                f.write(content)
-        print(f"Downloaded: {local_in}")
+    print("\n" + "="*60)
+    print("STAGE: Download original video from Supabase Storage")
+    print("="*60)
+    print("▶️  RUNNING: Download original video from Supabase Storage (auto-continue mode)\n")
+    
+    update_progress(video_id, 5, "מוריד סרטון מקורי...")
+    local_in = os.path.basename(file_key)
+    data = supabase.storage.from_(bucket).download(file_key)
+    if isinstance(data, bytes):
+        with open(local_in, "wb") as f:
+            f.write(data)
     else:
-        local_in = os.path.basename(file_key)
-        print(f"Skipped download - using existing file: {local_in}")
+        content = data.read() if hasattr(data, "read") else data
+        with open(local_in, "wb") as f:
+            f.write(content)
+    print(f"Downloaded: {local_in}")
 
     # 2) Process with reelsfy logic (stops before burning subtitles)
-    if prompt_stage("Process video with reelsfy (transcription, segmentation, cropping, silence removal)"):
-        update_progress(video_id, 10, "מתחיל עיבוד ראשוני...")
-        
-        # Use explicit is_short_video flag from frontend (already passed to this function)
-        print(f"Short video mode: {is_short_video}")
-        
-        process_video_file(local_in, out_dir="tmp", settings=settings, video_id=video_id, 
-                          progress_callback=update_progress, is_short_video=is_short_video)
-    else:
-        print("Skipped reelsfy processing")
+    print("\n" + "="*60)
+    print("STAGE: Process video with reelsfy (transcription, segmentation, cropping, silence removal)")
+    print("="*60)
+    print("▶️  RUNNING: Process video with reelsfy (auto-continue mode)\n")
+    
+    update_progress(video_id, 10, "מתחיל עיבוד ראשוני...")
+    
+    # Use explicit is_short_video flag from frontend (already passed to this function)
+    print(f"Short video mode: {is_short_video}")
+    
+    process_video_file(local_in, out_dir="tmp", settings=settings, video_id=video_id, 
+                      progress_callback=update_progress, is_short_video=is_short_video)
 
     # Create consistent folder name in storage (e.g. user123/filename-without-ext)
     # The file_key format is: user_id/timestamp.mp4 (e.g., 6ff414f2-0f7d-463a-af6c-f86dc1073d2e/1760477721689.mp4)
@@ -194,55 +183,118 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     content_txt_path = f"results/{vid_name_no_mp4}/content.txt"
 
     # 3) Upload processed results (videos + SRTs, but NOT final_xxx.mp4)
-    if prompt_stage("Upload processed results to Supabase Storage"):
-        update_progress(video_id, 85, "מעלה קבצים מעובדים...")
-        print("Uploading files to processed-videos bucket...")
-        
-        if os.path.exists(content_txt_path):
-            supabase.storage.from_("processed-videos").upload(
-                f"{video_output_dir}/content.txt", content_txt_path
-            )
-            print("Uploaded content.txt")
-        else:
-            print(f"Did not find content.txt in {content_txt_path}")
-
-        for fname in os.listdir("tmp"):
-            # For short videos: only upload output_cropped files (skip output_croppedwithoutcutting)
-            # For regular videos: upload all output_cropped files
-            if is_short_video:
-                # Short video: only upload the essential files
-                if (fname == "output_cropped000.mp4" or 
-                    fname == "output_cropped000.srt"):
-                    local_path = os.path.join("tmp", fname)
-                    dest_path = f"{video_output_dir}/{fname}"
-                    supabase.storage.from_("processed-videos").upload(dest_path, local_path)
-                    print(f"Uploaded {fname}")
-            else:
-                # Regular video: upload all output_cropped files
-                if (fname == "content.txt" or 
-                    fname.startswith("output_cropped") and fname.endswith(".mp4") or
-                    fname.startswith("output_cropped") and fname.endswith(".srt")):
-                    local_path = os.path.join("tmp", fname)
-                    dest_path = f"{video_output_dir}/{fname}"
-                    supabase.storage.from_("processed-videos").upload(dest_path, local_path)
-                    print(f"Uploaded {fname}")
-        print("Finished uploading files")
+    print("\n" + "="*60)
+    print("STAGE: Upload processed results to Supabase Storage")
+    print("="*60)
+    print("▶️  RUNNING: Upload processed results to Supabase Storage (auto-continue mode)\n")
+    
+    update_progress(video_id, 85, "מעלה קבצים מעובדים...")
+    print("Uploading files to processed-videos bucket...")
+    
+    if os.path.exists(content_txt_path):
+        supabase.storage.from_("processed-videos").upload(
+            f"{video_output_dir}/content.txt", content_txt_path
+        )
+        print("Uploaded content.txt")
     else:
-        print("Skipped uploading processed results")
+        print(f"Did not find content.txt in {content_txt_path}")
+
+    for fname in os.listdir("tmp"):
+        # For short videos: only upload output_cropped files (skip output_croppedwithoutcutting)
+        # For regular videos: upload all output_cropped files
+        if is_short_video:
+            # Short video: only upload the essential files
+            if (fname == "output_cropped000.mp4" or 
+                fname == "output_cropped000.srt"):
+                local_path = os.path.join("tmp", fname)
+                dest_path = f"{video_output_dir}/{fname}"
+                supabase.storage.from_("processed-videos").upload(dest_path, local_path)
+                print(f"Uploaded {fname}")
+        else:
+            # Regular video: upload all output_cropped files
+            if (fname == "content.txt" or 
+                fname.startswith("output_cropped") and fname.endswith(".mp4") or
+                fname.startswith("output_cropped") and fname.endswith(".srt")):
+                local_path = os.path.join("tmp", fname)
+                dest_path = f"{video_output_dir}/{fname}"
+                supabase.storage.from_("processed-videos").upload(dest_path, local_path)
+                print(f"Uploaded {fname}")
+    print("Finished uploading files")
 
     # 4) Read content.txt and create rows for shorts (aligned by index)
-    if prompt_stage("Prepare database records for shorts"):
-        update_progress(video_id, 90, "מכין רשומות מסד נתונים...")
-        shorts_to_insert = []
+    print("\n" + "="*60)
+    print("STAGE: Prepare database records for shorts")
+    print("="*60)
+    print("▶️  RUNNING: Prepare database records for shorts (auto-continue mode)\n")
+    
+    update_progress(video_id, 90, "מכין רשומות מסד נתונים...")
+    shorts_to_insert = []
+    
+    if is_short_video:
+        # Short video: create a single short record directly
+        print("Short video mode - creating single short record")
         
-        if is_short_video:
-            # Short video: create a single short record directly
-            print("Short video mode - creating single short record")
-            
-            final_name = "final_000.mp4"
-            srt_name = "output_cropped000.srt"
-            
-            # Read SRT content
+        final_name = "final_000.mp4"
+        srt_name = "output_cropped000.srt"
+        
+        # Read SRT content
+        srt_content = None
+        srt_local = os.path.join("tmp", srt_name)
+        if os.path.exists(srt_local):
+            try:
+                with open(srt_local, "r", encoding="utf-8") as sf:
+                    srt_content = sf.read()
+            except Exception as e:
+                print("Failed reading SRT:", e)
+        
+        # Read title and description from content.txt (generated by GPT)
+        title = "סרטון קצר"  # Default title
+        description = ""
+        if os.path.exists(content_txt_path):
+            try:
+                with open(content_txt_path, "r", encoding="utf-8") as f:
+                    content = json.load(f)
+                    title = content.get("title", "סרטון קצר")
+                    description = content.get("description", "")
+                    print(f"Read title from GPT: {title}")
+                    print(f"Read description from GPT: {description}")
+            except Exception as e:
+                print(f"Failed reading title/description from content.txt: {e}")
+        
+        shorts_to_insert.append({
+            "video_id": video_id,
+            "filename": final_name,
+            "title": title,
+            "description": description,
+            "start_time": "0",
+            "end_time": str(settings.get('maxClipLength', 0)),  # Full video duration
+            "duration": str(settings.get('maxClipLength', 0)),
+            "file_url": f"{video_output_dir}/{final_name}",
+            "srt_content": srt_content,
+            "original_video_filename": local_in,
+            "user_folder_id": user_id,
+            "video_folder_name": video_folder_name,
+        })
+        print(f"Prepared DB row for short video: {final_name} with title: {title}")
+        
+    elif os.path.exists(content_txt_path):
+        # Regular video: read segments from content.txt
+        with open(content_txt_path, "r", encoding="utf-8") as f:
+            content = json.load(f)
+        segments = content.get("segments", [])
+
+        for i, seg in enumerate(segments):
+            start_time  = str(seg.get("start_time", ""))
+            end_time    = str(seg.get("end_time", ""))
+            duration    = str(seg.get("duration", ""))
+            title       = seg.get("title", None)         # Hebrew
+            description = seg.get("description", "")     # Hebrew
+
+            # we know our output names from reelsfy.py
+            final_name   = f"final_{i:03}.mp4"
+            srt_name     = f"output_cropped{i:03}.srt"  # Updated to match actual filename
+
+            # best-effort read of retimed SRT content (includes <color> tags from GPT)
             srt_content = None
             srt_local = os.path.join("tmp", srt_name)
             if os.path.exists(srt_local):
@@ -251,109 +303,141 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
                         srt_content = sf.read()
                 except Exception as e:
                     print("Failed reading SRT:", e)
-            
-            # Read title and description from content.txt (generated by GPT)
-            title = "סרטון קצר"  # Default title
-            description = ""
-            if os.path.exists(content_txt_path):
-                try:
-                    with open(content_txt_path, "r", encoding="utf-8") as f:
-                        content = json.load(f)
-                        title = content.get("title", "סרטון קצר")
-                        description = content.get("description", "")
-                        print(f"Read title from GPT: {title}")
-                        print(f"Read description from GPT: {description}")
-                except Exception as e:
-                    print(f"Failed reading title/description from content.txt: {e}")
-            
+
             shorts_to_insert.append({
                 "video_id": video_id,
                 "filename": final_name,
                 "title": title,
                 "description": description,
-                "start_time": "0",
-                "end_time": str(settings.get('maxClipLength', 0)),  # Full video duration
-                "duration": str(settings.get('maxClipLength', 0)),
+                "start_time": start_time,
+                "end_time": end_time,
+                "duration": duration,
                 "file_url": f"{video_output_dir}/{final_name}",
-                "srt_content": srt_content,
+                "srt_content": srt_content,  # keep a copy in DB
                 "original_video_filename": local_in,
-                "user_folder_id": user_id,
-                "video_folder_name": video_folder_name,
+                "user_folder_id": user_id,  # User ID (e.g., 6ff414f2-0f7d-463a-af6c-f86dc1073d2e)
+                "video_folder_name": video_folder_name,  # Only the timestamp part (e.g., 1760477721689)
             })
-            print(f"Prepared DB row for short video: {final_name} with title: {title}")
-            
-        elif os.path.exists(content_txt_path):
-            # Regular video: read segments from content.txt
-            with open(content_txt_path, "r", encoding="utf-8") as f:
-                content = json.load(f)
-            segments = content.get("segments", [])
-
-            for i, seg in enumerate(segments):
-                start_time  = str(seg.get("start_time", ""))
-                end_time    = str(seg.get("end_time", ""))
-                duration    = str(seg.get("duration", ""))
-                title       = seg.get("title", None)         # Hebrew
-                description = seg.get("description", "")     # Hebrew
-
-                # we know our output names from reelsfy.py
-                final_name   = f"final_{i:03}.mp4"
-                srt_name     = f"output_cropped{i:03}.srt"  # Updated to match actual filename
-
-                # best-effort read of retimed SRT content (includes <color> tags from GPT)
-                srt_content = None
-                srt_local = os.path.join("tmp", srt_name)
-                if os.path.exists(srt_local):
-                    try:
-                        with open(srt_local, "r", encoding="utf-8") as sf:
-                            srt_content = sf.read()
-                    except Exception as e:
-                        print("Failed reading SRT:", e)
-
-                shorts_to_insert.append({
-                    "video_id": video_id,
-                    "filename": final_name,
-                    "title": title,
-                    "description": description,
-                    "start_time": start_time,
-                    "end_time": end_time,
-                    "duration": duration,
-                    "file_url": f"{video_output_dir}/{final_name}",
-                    "srt_content": srt_content,  # keep a copy in DB
-                    "original_video_filename": local_in,
-                    "user_folder_id": user_id,  # User ID (e.g., 6ff414f2-0f7d-463a-af6c-f86dc1073d2e)
-                    "video_folder_name": video_folder_name,  # Only the timestamp part (e.g., 1760477721689)
-                })
-                print(f"Prepared DB row for {final_name}")
-        
-        print(f"Prepared {len(shorts_to_insert)} shorts records")
-    else:
-        shorts_to_insert = []
-        print("Skipped preparing database records")
+            print(f"Prepared DB row for {final_name}")
+    
+    print(f"Prepared {len(shorts_to_insert)} shorts records")
 
     # 5) Insert rows into shorts table
-    if prompt_stage("Insert shorts records into database"):
-        if shorts_to_insert:
-            supabase.table("shorts").insert(shorts_to_insert).execute()
-            print(f"Inserted {len(shorts_to_insert)} shorts into database")
-        else:
-            print("No shorts to insert")
+    print("\n" + "="*60)
+    print("STAGE: Insert shorts records into database")
+    print("="*60)
+    print("▶️  RUNNING: Insert shorts records into database (auto-continue mode)\n")
+    
+    if shorts_to_insert:
+        supabase.table("shorts").insert(shorts_to_insert).execute()
+        print(f"Inserted {len(shorts_to_insert)} shorts into database")
     else:
-        print("Skipped inserting shorts into database")
+        print("No shorts to insert")
 
-    # 6) (optionally cleanup)
-    # supabase.storage.from_(bucket).remove([file_key])
-    # shutil.rmtree("tmp", ignore_errors=True)
-
-    # 7) Update video row to mark as processed
-    if prompt_stage("Update video status to completed"):
-        update_progress(video_id, 100, "הושלם!")
-        supabase.table("videos").update({
-            "status": "completed",
-            "progress": 100
-        }).eq("file_url", file_key).execute()
-        print(f"Updated video status to completed")
-    else:
-        print("Skipped updating video status")
+    # 6) Update video row to mark as processed
+    print("\n" + "="*60)
+    print("STAGE: Update video status to completed")
+    print("="*60)
+    print("▶️  RUNNING: Update video status to completed (auto-continue mode)\n")
+    
+    update_progress(video_id, 100, "הושלם!")
+    supabase.table("videos").update({
+        "status": "completed",
+        "progress": 100
+    }).eq("file_url", file_key).execute()
+    print(f"Updated video status to completed")
+    
+    # 7) Cleanup temporary files
+    print("\n" + "="*60)
+    print("STAGE: Cleanup temporary files")
+    print("="*60)
+    print("▶️  RUNNING: Cleanup temporary files (auto-continue mode)\n")
+    print("🧹 CLEANING UP TEMPORARY FILES")
+    print("="*60)
+    
+    # Delete tmp/ folder
+    if os.path.exists("tmp"):
+        try:
+            shutil.rmtree("tmp")
+            print("✅ Deleted tmp/ folder")
+        except Exception as e:
+            print(f"⚠️  Could not delete tmp/ folder: {e}")
+    
+    # Delete results/ folder
+    if os.path.exists("results"):
+        try:
+            shutil.rmtree("results")
+            print("✅ Deleted results/ folder")
+        except Exception as e:
+            print(f"⚠️  Could not delete results/ folder: {e}")
+    
+    # Delete downloaded video file from main directory
+    if os.path.exists(local_in):
+        try:
+            os.remove(local_in)
+            print(f"✅ Deleted downloaded video: {local_in}")
+        except Exception as e:
+            print(f"⚠️  Could not delete {local_in}: {e}")
+    
+    # Delete TalkNet temporary files in save/ folder and subdirectories
+    # Structure: save/pyavi/ and save/pycrop/
+    if os.path.exists("save"):
+        try:
+            deleted_count = 0
+            
+            # Delete files in save/ root
+            for filename in os.listdir("save"):
+                file_path = os.path.join("save", filename)
+                if os.path.isfile(file_path) and filename.endswith(('.avi', '.wav', '.pckl')):
+                    try:
+                        os.remove(file_path)
+                        deleted_count += 1
+                    except Exception as e:
+                        print(f"⚠️  Could not delete {file_path}: {e}")
+            
+            # Delete all files in save/pyavi/ subdirectory
+            pyavi_dir = os.path.join("save", "pyavi")
+            if os.path.exists(pyavi_dir):
+                for filename in os.listdir(pyavi_dir):
+                    file_path = os.path.join(pyavi_dir, filename)
+                    if os.path.isfile(file_path):
+                        try:
+                            os.remove(file_path)
+                            deleted_count += 1
+                        except Exception as e:
+                            print(f"⚠️  Could not delete {file_path}: {e}")
+            
+            # Delete all files in save/pycrop/ subdirectory
+            pycrop_dir = os.path.join("save", "pycrop")
+            if os.path.exists(pycrop_dir):
+                for filename in os.listdir(pycrop_dir):
+                    file_path = os.path.join(pycrop_dir, filename)
+                    if os.path.isfile(file_path):
+                        try:
+                            os.remove(file_path)
+                            deleted_count += 1
+                        except Exception as e:
+                            print(f"⚠️  Could not delete {file_path}: {e}")
+            
+            print(f"✅ Deleted {deleted_count} TalkNet temporary files from save/ folder (including pyavi/ and pycrop/)")
+        except Exception as e:
+            print(f"⚠️  Could not access save/ folder: {e}")
+    
+    print("="*60)
+    print("✅ Cleanup complete!")
+    print("="*60 + "\n")
+    
+    # Calculate and print total processing time
+    end_time = time.time()
+    total_time = end_time - start_time
+    minutes = int(total_time // 60)
+    seconds = int(total_time % 60)
+    
+    print("\n" + "="*60)
+    print("⏱️  TOTAL PROCESSING TIME")
+    print("="*60)
+    print(f"Total time: {minutes}m {seconds}s ({total_time:.2f} seconds)")
+    print("="*60 + "\n")
     
     print(f"Finished run_reelsfy process.")
 

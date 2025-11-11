@@ -68,10 +68,6 @@ IS_SHORT_VIDEO = False
 SKIP_MODE = False  # Global skip mode - if True, auto-continue all stages
 
 # Global model instances for performance optimization
-GLOBAL_FACE_DETECTION = None
-GLOBAL_FACE_MESH = None
-GLOBAL_SYNCNET = None
-GLOBAL_VOICE_ENCODER = None
 GLOBAL_TALKNET = None
 GLOBAL_TALKNET_DET = None
 
@@ -83,38 +79,14 @@ def report_progress(progress: int, stage: str, eta_seconds: int = None):
         print(f"Progress: {progress}% - {stage}")
 
 def initialize_models():
-    """Initialize all ML models at startup for better performance."""
-    global GLOBAL_FACE_DETECTION, GLOBAL_FACE_MESH, GLOBAL_SYNCNET, GLOBAL_VOICE_ENCODER, GLOBAL_TALKNET, GLOBAL_TALKNET_DET
+    """Initialize TalkNet model at startup for better performance."""
+    global GLOBAL_TALKNET, GLOBAL_TALKNET_DET
     
-    print("🚀 Initializing TalkNet (TESTING MODE - other models disabled)...")
+    print("🚀 Initializing TalkNet Active Speaker Detection...")
     
     try:
-        # TESTING MODE: Only load TalkNet
-        # Other models are commented out for testing
-        
-        # # Initialize MediaPipe models
-        # import mediapipe as mp
-        # mp_face_det = mp.solutions.face_detection
-        # mp_face_mesh = mp.solutions.face_mesh
-        # 
-        # print("  📷 Loading MediaPipe Face Detection...")
-        # GLOBAL_FACE_DETECTION = mp_face_det.FaceDetection(
-        #     model_selection=1,  # 1 = full range (better for videos)
-        #     min_detection_confidence=0.5
-        # )
-        # 
-        # print("  🎭 Loading MediaPipe Face Mesh...")
-        # GLOBAL_FACE_MESH = mp_face_mesh.FaceMesh(
-        #     static_image_mode=False, 
-        #     max_num_faces=5,
-        #     refine_landmarks=False, 
-        #     min_detection_confidence=0.5,
-        #     min_tracking_confidence=0.5
-        # )
-        
-        # Initialize TalkNet for active speaker detection
         import sys as system_module
-        print("  🎤 Loading TalkNet Active Speaker Detection...")
+        print("  🎤 Loading TalkNet model...")
         TALKNET_DIR = r"D:\ClipPeak\fast-asd\talknet"
         TALKNET_MODEL = r"D:\ClipPeak\fast-asd\models\pretrain_TalkSet.model"
         
@@ -127,29 +99,7 @@ def initialize_models():
         from demoTalkNet import setup
         GLOBAL_TALKNET, GLOBAL_TALKNET_DET = setup()
         print("  ✅ TalkNet loaded successfully")
-        
-        # # Initialize Resemblyzer Voice Encoder
-        # print("  🎤 Loading Resemblyzer Voice Encoder...")
-        # from resemblyzer import VoiceEncoder
-        # GLOBAL_VOICE_ENCODER = VoiceEncoder()
-        # 
-        # # Initialize SyncNet if available
-        # SYNCNET_DIR = r"D:\ClipPeak\syncnet_repo"
-        # SYNCNET_MODEL = r"D:\ClipPeak\syncnet_repo\syncnet_v2.model"
-        # 
-        # if os.path.exists(SYNCNET_DIR) and os.path.exists(SYNCNET_MODEL):
-        #     print("  🎬 Loading SyncNet model...")
-        #     import sys
-        #     sys.path.insert(0, SYNCNET_DIR)
-        #     from SyncNetInstance import SyncNetInstance
-        #     GLOBAL_SYNCNET = SyncNetInstance()
-        #     GLOBAL_SYNCNET.loadParameters(SYNCNET_MODEL)
-        #     GLOBAL_SYNCNET.eval()
-        #     print("  ✅ SyncNet loaded successfully")
-        # else:
-        #     print("  📝 SyncNet not available")
-        
-        print("✅ TalkNet initialized successfully!")
+        print("✅ Model initialization complete!")
         
     except Exception as e:
         import traceback
@@ -159,50 +109,19 @@ def initialize_models():
 
 def cleanup_models():
     """Clean up global model instances."""
-    global GLOBAL_FACE_DETECTION, GLOBAL_FACE_MESH, GLOBAL_SYNCNET, GLOBAL_VOICE_ENCODER, GLOBAL_TALKNET, GLOBAL_TALKNET_DET
+    global GLOBAL_TALKNET, GLOBAL_TALKNET_DET
     
-    if GLOBAL_FACE_DETECTION:
-        GLOBAL_FACE_DETECTION.close()
-        GLOBAL_FACE_DETECTION = None
-    
-    if GLOBAL_FACE_MESH:
-        GLOBAL_FACE_MESH.close()
-        GLOBAL_FACE_MESH = None
-    
-    GLOBAL_SYNCNET = None
-    GLOBAL_VOICE_ENCODER = None
     GLOBAL_TALKNET = None
     GLOBAL_TALKNET_DET = None
 
 
-# --- Helper function for interactive stage control ---
-def prompt_stage(stage_name: str) -> bool:
-    """
-    Prompts user to continue or skip a stage.
-    Returns True if stage should be executed, False if skipped.
-    """
-    # COMMENTED OUT: Always auto-continue all stages
-    global SKIP_MODE
-    
+# --- Helper function for stage logging ---
+def log_stage(stage_name: str):
+    """Log the current processing stage."""
     print(f"\n{'='*60}")
     print(f"STAGE: {stage_name}")
     print(f"{'='*60}")
     print(f"▶️  RUNNING: {stage_name} (auto-continue mode)\n")
-    return True
-    
-    # # If skip mode is enabled, auto-continue all stages
-    # if SKIP_MODE:
-    #     print(f"▶️  RUNNING: {stage_name} (auto-continue mode)\n")
-    #     return True
-    # 
-    # user_input = input("Press ENTER to continue or type 'skip' to skip this stage: ").strip().lower()
-    # 
-    # if user_input == 'skip':
-    #     print(f"⏭️  SKIPPED: {stage_name}\n")
-    #     return False
-    # else:
-    #     print(f"▶️  RUNNING: {stage_name}\n")
-    #     return True
 
 # --- Utility: time conversions ---
 def to_seconds(value):
@@ -465,7 +384,8 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
     """
     srt_path = os.path.join('tmp', f"{os.path.splitext(input_file)[0]}.srt")
     if os.path.exists(srt_path):
-        print(f"Found existing SRT, skipping transcription: {srt_path}")
+        print(f"⚠️  LANGUAGE DETECTION: Found existing SRT, skipping transcription: {srt_path}")
+        print(f"⚠️  LANGUAGE DETECTION: Returning 'unknown' because SRT already exists (no detection performed)")
         # Try to detect language from existing SRT (or default to 'unknown')
         return (open(srt_path, 'r', encoding='utf-8').read(), 'unknown')
 
@@ -477,6 +397,7 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
         print("="*60)
         print(f"The video file '{input_file}' does not contain an audio track.")
         print("Creating empty SRT file to allow processing to continue.")
+        print("⚠️  LANGUAGE DETECTION: Returning 'unknown' because video has no audio stream")
         print("="*60 + "\n")
         
         # Create an empty SRT file
@@ -494,21 +415,55 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
         print("="*60)
         
         # Check CUDA availability
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        cuda_available = torch.cuda.is_available()
+        print(f"🔍 CUDA available: {cuda_available}")
+        
+        # Try CUDA first, fall back to CPU if initialization fails
+        device = "cuda" if cuda_available else "cpu"
         compute_type = "float16" if device == "cuda" else "int8"
         
-        print(f"🖥️  Device: {device.upper()}")
+        print(f"🖥️  Initial device: {device.upper()}")
         if device == "cuda":
-            gpu_name = torch.cuda.get_device_name(0)
-            print(f"🎮 GPU: {gpu_name}")
+            try:
+                gpu_name = torch.cuda.get_device_name(0)
+                print(f"🎮 GPU: {gpu_name}")
+                
+                # Test CUDA with a small operation to verify cuDNN works
+                test_tensor = torch.zeros(1).cuda()
+                del test_tensor
+                torch.cuda.empty_cache()
+                print(f"✅ CUDA test successful")
+            except Exception as cuda_error:
+                print(f"⚠️  CUDA/cuDNN initialization failed: {cuda_error}")
+                print(f"⚠️  This usually means cuDNN is not properly installed")
+                print(f"🔄 Falling back to CPU mode...")
+                device = "cpu"
+                compute_type = "int8"
+        
+        print(f"🖥️  Final device: {device.upper()}")
         print(f"⚡ Compute type: {compute_type}")
         
         # First pass: Detect language using small model (fast)
         print("\n📊 Detecting language...")
-        detection_model = WhisperModel("tiny", device=device, compute_type=compute_type)
+        print(f"🔍 LANGUAGE DETECTION: Using 'tiny' model for detection")
+        print(f"🔍 LANGUAGE DETECTION: Device={device}, Compute={compute_type}")
+        
+        try:
+            detection_model = WhisperModel("tiny", device=device, compute_type=compute_type)
+        except Exception as model_error:
+            if device == "cuda":
+                print(f"⚠️  Failed to load model on CUDA: {model_error}")
+                print(f"🔄 Retrying with CPU...")
+                device = "cpu"
+                compute_type = "int8"
+                detection_model = WhisperModel("tiny", device=device, compute_type=compute_type)
+            else:
+                raise
+        
         video_path = os.path.join('tmp', input_file)
         
         # Transcribe first 30 seconds to detect language
+        print(f"🔍 LANGUAGE DETECTION: Transcribing video for language detection...")
         segments_detect, info = detection_model.transcribe(
             video_path,
             beam_size=1,
@@ -517,12 +472,17 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
         )
         
         # Consume the generator to get language info
-        _ = list(segments_detect)
+        print(f"🔍 LANGUAGE DETECTION: Consuming segments to extract language info...")
+        segment_list = list(segments_detect)
+        print(f"🔍 LANGUAGE DETECTION: Processed {len(segment_list)} segments for detection")
         
         detected_language = info.language
         language_probability = info.language_probability
         
+        print(f"✅ LANGUAGE DETECTION SUCCESS!")
         print(f"🌍 Detected language: {detected_language} (confidence: {language_probability:.2%})")
+        print(f"🌍 Language code: '{detected_language}'")
+        print(f"🌍 Language probability: {language_probability}")
         
         # Clean up detection model to free memory
         del detection_model
@@ -547,10 +507,30 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
             except Exception as e:
                 print(f"⚠️  Warning: Could not load ivrit-ai model ({e})")
                 print("   Falling back to standard large-v3 model")
-                model = WhisperModel("large-v3", device=device, compute_type=compute_type)
+                try:
+                    model = WhisperModel("large-v3", device=device, compute_type=compute_type)
+                except Exception as cuda_error:
+                    if device == "cuda":
+                        print(f"⚠️  Failed to load large-v3 on CUDA: {cuda_error}")
+                        print(f"🔄 Retrying with CPU...")
+                        device = "cpu"
+                        compute_type = "int8"
+                        model = WhisperModel("large-v3", device=device, compute_type=compute_type)
+                    else:
+                        raise
         else:
             print(f"🌐 Using Whisper Turbo for {detected_language}")
-            model = WhisperModel("turbo", device=device, compute_type=compute_type)
+            try:
+                model = WhisperModel("turbo", device=device, compute_type=compute_type)
+            except Exception as cuda_error:
+                if device == "cuda":
+                    print(f"⚠️  Failed to load turbo on CUDA: {cuda_error}")
+                    print(f"🔄 Retrying with CPU...")
+                    device = "cpu"
+                    compute_type = "int8"
+                    model = WhisperModel("turbo", device=device, compute_type=compute_type)
+                else:
+                    raise
         
         # Transcribe with optimal settings
         print(f"⏳ Transcribing {input_file}...")
@@ -591,6 +571,7 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
         print(f"⚠️  Warning: faster-whisper not available ({e})")
         print("   Falling back to standard auto_subtitle method")
         print("   Install faster-whisper for better performance: pip install faster-whisper")
+        print(f"⚠️  LANGUAGE DETECTION: Returning 'unknown' because faster-whisper not available (ImportError)")
         
         # Fallback to original method
         cmd = f"auto_subtitle tmp/{input_file} --srt_only True --output_srt True -o tmp/ --model turbo"
@@ -599,9 +580,11 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
         
         # Check if SRT was created
         if os.path.exists(srt_path):
+            print(f"⚠️  LANGUAGE DETECTION: auto_subtitle succeeded but no language detection performed")
             return (open(srt_path, 'r', encoding='utf-8').read(), 'unknown')
         else:
             print(f"⚠️  Warning: auto_subtitle failed to create SRT, creating empty file")
+            print(f"⚠️  LANGUAGE DETECTION: Returning 'unknown' because auto_subtitle failed")
             with open(srt_path, 'w', encoding='utf-8') as f:
                 f.write("")
             return ("", 'unknown')
@@ -609,33 +592,41 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
     except (IndexError, ValueError) as e:
         # These errors often indicate no audio stream or corrupted audio
         print(f"❌ Audio processing error: {e}")
+        print(f"⚠️  LANGUAGE DETECTION: IndexError/ValueError caught - {type(e).__name__}: {e}")
         print("   This usually means the video has no audio stream or corrupted audio")
         print("   Checking audio stream again...")
         
         # Double-check audio stream
         if not has_audio_stream(video_path):
             print("   Confirmed: No audio stream found. Creating empty SRT.")
+            print(f"⚠️  LANGUAGE DETECTION: Returning 'unknown' because no audio stream found after error")
             with open(srt_path, 'w', encoding='utf-8') as f:
                 f.write("")
             return ("", 'unknown')
         else:
             print("   Audio stream detected but transcription failed. Trying auto_subtitle fallback...")
+            print(f"⚠️  LANGUAGE DETECTION: Returning 'unknown' because transcription failed (using auto_subtitle fallback)")
             cmd = f"auto_subtitle tmp/{input_file} --srt_only True --output_srt True -o tmp/ --model turbo"
             print(f"Transcribing with auto_subtitle: {cmd}")
             subprocess.call(cmd, shell=True)
             
             # Check if SRT was created
             if os.path.exists(srt_path):
+                print(f"⚠️  LANGUAGE DETECTION: auto_subtitle succeeded after error, but no language detected")
                 return (open(srt_path, 'r', encoding='utf-8').read(), 'unknown')
             else:
                 print(f"⚠️  Warning: All transcription methods failed, creating empty SRT")
+                print(f"⚠️  LANGUAGE DETECTION: Returning 'unknown' because all methods failed")
                 with open(srt_path, 'w', encoding='utf-8') as f:
                     f.write("")
                 return ("", 'unknown')
     
     except Exception as e:
         print(f"❌ Error during transcription: {e}")
+        print(f"⚠️  LANGUAGE DETECTION: Generic exception caught - {type(e).__name__}: {e}")
         print("   Falling back to standard auto_subtitle method")
+        import traceback
+        traceback.print_exc()
         
         # Fallback to original method
         cmd = f"auto_subtitle tmp/{input_file} --srt_only True --output_srt True -o tmp/ --model turbo"
@@ -644,9 +635,11 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
         
         # Check if SRT was created
         if os.path.exists(srt_path):
+            print(f"⚠️  LANGUAGE DETECTION: Returning 'unknown' because generic exception occurred (auto_subtitle fallback)")
             return (open(srt_path, 'r', encoding='utf-8').read(), 'unknown')
         else:
             print(f"⚠️  Warning: All transcription methods failed, creating empty SRT")
+            print(f"⚠️  LANGUAGE DETECTION: Returning 'unknown' because all methods failed after generic exception")
             with open(srt_path, 'w', encoding='utf-8') as f:
                 f.write("")
             return ("", 'unknown')
@@ -1018,27 +1011,13 @@ def generate_short(input_file: str, output_file: str, srt_path: str = None, dete
         print(f"Skipping cropping, exists: {out_path}")
         return
 
-    # TESTING MODE: TalkNet only, no fallbacks
+    # TalkNet is required - no fallbacks
     global GLOBAL_TALKNET, GLOBAL_TALKNET_DET
     if GLOBAL_TALKNET is None or GLOBAL_TALKNET_DET is None:
-        raise RuntimeError("❌ TalkNet not loaded! Cannot proceed without TalkNet in testing mode.")
+        raise RuntimeError("❌ TalkNet not loaded! Cannot proceed without TalkNet.")
     
-    print("🎯 Using TalkNet Active Speaker Detection (High Accuracy)")
+    print("🎯 Using TalkNet Active Speaker Detection")
     return generate_short_with_talknet(in_path, out_path, srt_path, detect_every, ease, zoom_cues)
-    
-    # ORIGINAL CODE WITH FALLBACKS (currently disabled for testing):
-    # try:
-    #     global GLOBAL_TALKNET, GLOBAL_TALKNET_DET
-    #     if GLOBAL_TALKNET is not None and GLOBAL_TALKNET_DET is not None:
-    #         print("🎯 Using TalkNet Active Speaker Detection (High Accuracy)")
-    #         return generate_short_with_talknet(in_path, out_path, srt_path, detect_every, ease, zoom_cues)
-    #     else:
-    #         print("📝 TalkNet not available, using advanced ASD fallback")
-    #         return generate_short_advanced_asd(in_path, out_path, srt_path, detect_every, ease, zoom_cues)
-    # except Exception as e:
-    #     print(f"⚠️  Active speaker detection failed ({e})")
-    #     print("🔄 Falling back to simple face tracking...")
-    #     return generate_short_simple_fallback(in_path, out_path, srt_path, detect_every, ease, zoom_cues)
 
 def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = None, detect_every: int = 6, ease: float = 0.85, zoom_cues=None):
     """
@@ -1083,40 +1062,18 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
     sys.path.insert(0, r"D:\ClipPeak\fast-asd\talknet")
     from demoTalkNet import main as talknet_main
     
-    # Check if we should generate debug visualization
-    GENERATE_DEBUG_VIDEO = os.environ.get('TALKNET_DEBUG', 'true').lower() == 'true'
-    
     try:
-        # Run TalkNet on the video
-        if GENERATE_DEBUG_VIDEO:
-            print("📹 Generating TalkNet debug visualization...")
-            talknet_results, debug_video_path = talknet_main(
-                GLOBAL_TALKNET,
-                GLOBAL_TALKNET_DET,
-                in_path,
-                start_seconds=0,
-                end_seconds=-1,
-                return_visualization=True,  # Generate debug video
-                face_boxes="",
-                in_memory_threshold=5000
-            )
-            # Copy debug video to results folder for easy access
-            debug_output_path = out_path.replace('.mp4', '_talknet_debug.mp4')
-            if os.path.exists(debug_video_path):
-                import shutil
-                shutil.copy2(debug_video_path, debug_output_path)
-                print(f"✅ TalkNet debug video saved: {debug_output_path}")
-        else:
-            talknet_results = talknet_main(
-                GLOBAL_TALKNET,
-                GLOBAL_TALKNET_DET,
-                in_path,
-                start_seconds=0,
-                end_seconds=-1,
-                return_visualization=False,
-                face_boxes="",
-                in_memory_threshold=5000
-            )
+        # Run TalkNet on the video (no debug visualization)
+        talknet_results = talknet_main(
+            GLOBAL_TALKNET,
+            GLOBAL_TALKNET_DET,
+            in_path,
+            start_seconds=0,
+            end_seconds=-1,
+            return_visualization=False,
+            face_boxes="",
+            in_memory_threshold=5000
+        )
         print(f"✅ TalkNet detected {len(talknet_results)} frames with face data")
     except Exception as e:
         import traceback
@@ -1200,10 +1157,30 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
                 return True
         return False
     
-    # Generate cropped frames
-    print("🎬 Generating cropped frames...")
-    frames_dir = os.path.join("tmp", f"__frames_{os.path.basename(out_path)}")
-    os.makedirs(frames_dir, exist_ok=True)
+    # Generate cropped frames and encode directly with FFmpeg pipe
+    print("🎬 Processing frames with FFmpeg pipe (fast, no disk I/O)...")
+    
+    # Start FFmpeg process with pipe input for direct encoding
+    import subprocess
+    tmp_video_only = os.path.join("tmp", f"__tmp_tracked_{os.path.basename(out_path)}")
+    
+    ffmpeg_cmd = [
+        'ffmpeg', '-y',
+        '-f', 'rawvideo',
+        '-vcodec', 'rawvideo',
+        '-s', f'{out_w}x{out_h}',
+        '-pix_fmt', 'bgr24',
+        '-r', str(fps),
+        '-i', '-',  # Read from stdin
+        '-c:v', 'h264_nvenc',
+        '-preset', 'fast',
+        '-pix_fmt', 'yuv420p',
+        tmp_video_only
+    ]
+    
+    print(f"🚀 Starting FFmpeg encoding pipeline...")
+    ffmpeg_process = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, 
+                                       stderr=subprocess.PIPE, stdout=subprocess.PIPE)
     
     cap = cv2.VideoCapture(in_path)
     frame_idx = 0
@@ -1261,7 +1238,7 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
         
         # Apply zoom if needed
         if should_zoom(current_time):
-            zoom_factor = 1.05
+            zoom_factor = 1.1  # 10% zoom in
             zoomed_h = int(ch / zoom_factor)
             zoomed_w = int(cw / zoom_factor)
             start_y = (ch - zoomed_h) // 2
@@ -1272,9 +1249,12 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
         # Resize to final output
         crop = cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
         
-        # Save frame
-        frame_path = os.path.join(frames_dir, f"frame_{frame_idx:06d}.png")
-        cv2.imwrite(frame_path, crop)
+        # Write frame directly to FFmpeg pipe (no disk I/O)
+        try:
+            ffmpeg_process.stdin.write(crop.tobytes())
+        except BrokenPipeError:
+            print(f"⚠️  FFmpeg pipe broken at frame {frame_idx}")
+            break
         
         prev_speaker_id = current_speaker_id
         frame_idx += 1
@@ -1284,21 +1264,16 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
             print(f"   Progress: {frame_idx}/{nF} frames ({progress:.1f}%)")
     
     cap.release()
-    print(f"✅ Finished processing {frame_idx} frames. Compiling video with FFmpeg...")
     
-    # Compile frames into video
-    tmp_video_only = os.path.join("tmp", f"__tmp_tracked_{os.path.basename(out_path)}")
+    # Close FFmpeg pipe and wait for encoding to finish
+    ffmpeg_process.stdin.close()
+    ffmpeg_process.wait()
     
-    cmd = [
-        'ffmpeg', '-y',
-        '-framerate', str(fps),
-        '-i', os.path.join(frames_dir, 'frame_%06d.png'),
-        '-c:v', 'h264_nvenc',
-        '-preset', 'fast',
-        '-pix_fmt', 'yuv420p',
-        tmp_video_only
-    ]
-    subprocess.run(cmd, check=True)
+    if ffmpeg_process.returncode != 0:
+        stderr_output = ffmpeg_process.stderr.read().decode('utf-8')
+        print(f"⚠️  FFmpeg encoding had issues: {stderr_output}")
+    
+    print(f"✅ Finished processing {frame_idx} frames with direct encoding (no PNG intermediates)")
     
     # Remux with audio
     import ffmpeg
@@ -1316,1059 +1291,17 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
         .run(quiet=False)
     )
     
-    # Cleanup
+    # Cleanup temporary video file
     try:
-        import shutil
-        shutil.rmtree(frames_dir)
         os.remove(tmp_video_only)
-    except:
-        pass
+    except Exception as e:
+        print(f"⚠️  Could not remove temporary file: {e}")
     
     print(f"✅ TalkNet processing complete: {out_path}")
     return out_path
 
-def generate_short_advanced_asd(in_path: str, out_path: str, srt_path: str = None, detect_every: int = 6, ease: float = 0.85, zoom_cues=None):
-    """
-    Advanced active speaker detection implementation using audio diarization and SyncNet.
-    """
-    import os
-    import math
-    import subprocess
-    from dataclasses import dataclass
-    from typing import List, Tuple, Dict, Optional
-    import numpy as np
-    import cv2
-    import webrtcvad
-    from resemblyzer import preprocess_wav, VoiceEncoder
-    from spectralcluster import SpectralClusterer
 
-    # SyncNet configuration - hardcoded paths
-    SYNCNET_DIR = r"D:\ClipPeak\syncnet_repo"
-    SYNCNET_MODEL = r"D:\ClipPeak\syncnet_repo\syncnet_v2.model"
 
-    # Configuration
-    WORKDIR = os.path.join('tmp', 'asd_work')
-    AUDIO_WAV = os.path.join(WORKDIR, "audio_16k_mono.wav")
-    
-    DESIRED_ASPECT = 9/16  # Portrait 9:16
-    MARGIN = 0.28          # padding around face crop
-    SMOOTHING = min(0.95, ease + 0.1)  # More aggressive smoothing for stability
-    MIN_BOX = 0.30         # min relative width when face tiny
-    
-    TRACKER_TYPE = "CSRT"  # KCF or CSRT
-    FACE_DETECT_EVERY = 6  # Detect faces every 6 frames for better performance
-    
-    # Speaker clustering
-    EMB_WINDOW_SEC = 1.0
-    EMB_HOP_SEC = 0.5
-    MIN_SPEAKERS = 1
-    MAX_SPEAKERS = 5
-    
-    # VAD
-    VAD_FRAME_MS = 30
-    VAD_AGGR = 2  # 0..3 (3 = most aggressive)
-    
-    # SyncNet usage params
-    USE_SYNCNET = bool(os.path.exists(SYNCNET_DIR) and os.path.exists(SYNCNET_MODEL))
-    SYNCNET_SAMPLE_FPS = 25.0
-    SYNCNET_FRAMES_PER_PROBE = 15
-    SYNCNET_PROBES_PER_SEG = 3
-    MOUTH_CROP_SIZE = 160
-
-    # Ensure work directory exists
-    os.makedirs(WORKDIR, exist_ok=True)
-
-    # Initialize MediaPipe
-    mp_face_mesh = mp.solutions.face_mesh
-    mp_face_det = mp.solutions.face_detection
-    MESH_LANDMARKS_MOUTH = [13, 14, 308, 78]  # simple inner/outer lip set
-
-    def run_ffmpeg_extract_audio(in_path: str, out_wav: str):
-        cmd = ["ffmpeg", "-y", "-i", in_path, "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", out_wav]
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    @dataclass
-    class Segment:
-        start: float
-        end: float
-        spk: int
-
-    def apply_vad(wav: np.ndarray, sample_rate=16000):
-        vad = webrtcvad.Vad(VAD_AGGR)
-        frame_size = int(sample_rate * VAD_FRAME_MS / 1000)
-        pcm = (wav * 32767).astype(np.int16).tobytes()
-        num_frames = len(wav) // frame_size
-        voiced = []
-        for i in range(num_frames):
-            start = i * frame_size * 2
-            end = start + frame_size * 2
-            frame_bytes = pcm[start:end]
-            if len(frame_bytes) < frame_size * 2: 
-                break
-            voiced.append(vad.is_speech(frame_bytes, sample_rate))
-        return np.array(voiced, dtype=bool), frame_size
-
-    def diarize_with_resemblyzer(wav_fpath: str) -> List[Segment]:
-        try:
-            wav = preprocess_wav(wav_fpath)  # 16k mono float32
-            sr = 16000
-            mask, frame_size = apply_vad(wav, sr)
-            frame_hop = frame_size / sr
-
-            if mask.sum() == 0:
-                dur = len(wav) / sr
-                return [Segment(0.0, dur, 0)]
-
-            # Use global voice encoder if available
-            global GLOBAL_VOICE_ENCODER
-            if GLOBAL_VOICE_ENCODER is not None:
-                encoder = GLOBAL_VOICE_ENCODER
-            else:
-                encoder = VoiceEncoder()
-            frames_per_win = int(EMB_WINDOW_SEC / frame_hop)
-            hop_frames = int(EMB_HOP_SEC / frame_hop)
-
-            centers = []
-            embeds = []
-            t = 0
-            while t + frames_per_win < len(mask):
-                win_mask = mask[t:t+frames_per_win]
-                if win_mask.mean() > 0.3:
-                    start_samp = int((t * frame_hop) * sr)
-                    end_samp = int(((t + frames_per_win) * frame_hop) * sr)
-                    chunk = wav[start_samp:end_samp]
-                    if len(chunk) > 0.2 * sr:
-                        emb = encoder.embed_utterance(chunk)
-                        embeds.append(emb)
-                        centers.append((t + frames_per_win/2) * frame_hop)
-                t += hop_frames
-
-            if len(embeds) == 0:
-                dur = len(wav) / sr
-                return [Segment(0.0, dur, 0)]
-
-            X = np.vstack(embeds)
-            clusterer = SpectralClusterer(
-                min_clusters=MIN_SPEAKERS,
-                max_clusters=MAX_SPEAKERS
-            )
-            labels = clusterer.predict(X)
-        except Exception as e:
-            print(f"⚠️  Audio diarization failed ({e}), falling back to single speaker")
-            dur = len(wav) / sr if 'wav' in locals() else 30.0  # fallback duration
-            return [Segment(0.0, dur, 0)]
-
-        # Continue with segmentation if diarization succeeded
-        segs: List[Segment] = []
-        cur_label = int(labels[0])
-        start = centers[0] - EMB_WINDOW_SEC/2
-        for i in range(1, len(labels)):
-            lab = int(labels[i])
-            boundary = (centers[i-1] + centers[i]) / 2
-            if lab != cur_label:
-                segs.append(Segment(max(0.0, start), max(boundary, start+0.01), cur_label))
-                start = boundary
-                cur_label = lab
-        audio_dur = len(wav) / sr
-        segs.append(Segment(max(0.0, start), min(audio_dur, centers[-1] + EMB_WINDOW_SEC/2), cur_label))
-
-        merged: List[Segment] = []
-        for s in segs:
-            if not merged: 
-                merged.append(s)
-            else:
-                if s.spk == merged[-1].spk and (s.start - merged[-1].end) < 0.15:
-                    merged[-1].end = s.end
-                else:
-                    merged.append(s)
-        return merged
-
-    # Utility functions
-    def lerp(a, b, t): 
-        return a*(1-t) + b*t
-    
-    def ema_bbox(prev, curr, alpha):
-        if prev is None: 
-            return curr
-        return (lerp(prev[0], curr[0], 1-alpha),
-                lerp(prev[1], curr[1], 1-alpha),
-                lerp(prev[2], curr[2], 1-alpha),
-                lerp(prev[3], curr[3], 1-alpha))
-    
-    def clamp(v, lo, hi): 
-        return max(lo, min(hi, v))
-
-    def fit_aspect_with_margin(x, y, w, h, W, H, aspect, margin):
-        cx, cy = x + w/2, y + h/2
-        w_m = w * (1 + 2*margin)
-        h_m = h * (1 + 2*margin)
-        cur_aspect = w_m / max(1, h_m)
-        if cur_aspect > aspect: 
-            h_m = w_m / aspect
-        else:                   
-            w_m = h_m * aspect
-        min_w = W * MIN_BOX
-        min_h = min_w / aspect
-        w_m = max(w_m, min_w)
-        h_m = max(h_m, min_h)
-        x0 = int(round(clamp(cx - w_m/2, 0, W-1)))
-        y0 = int(round(clamp(cy - h_m/2, 0, H-1)))
-        x1 = int(round(clamp(x0 + w_m, 0, W)))
-        y1 = int(round(clamp(y0 + h_m, 0, H)))
-        cw, ch = x1-x0, y1-y0
-        if cw / max(1, ch) > aspect:
-            new_w = int(ch * aspect)
-            x0 = clamp(x0 + (cw-new_w)//2, 0, W-new_w)
-            cw = new_w
-        else:
-            new_h = int(cw / aspect)
-            y0 = clamp(y0 + (ch-new_h)//2, 0, H-new_h)
-            ch = new_h
-        return x0, y0, cw, ch
-
-    def create_tracker():
-        return cv2.TrackerCSRT_create() if TRACKER_TYPE.upper()=="CSRT" else cv2.TrackerKCF_create()
-
-    def mouth_open_score(landmarks, W, H):
-        def xy(i): 
-            return np.array([landmarks[i].x * W, landmarks[i].y * H])
-        up, low, right, left = xy(13), xy(14), xy(308), xy(78)
-        vertical = np.linalg.norm(up - low)
-        width = np.linalg.norm(left - right) + 1e-6
-        return float(vertical / width)
-
-    def detect_faces(frame_bgr, face_det):
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        res = face_det.process(frame_rgb)
-        boxes = []
-        if res.detections:
-            for d in res.detections:
-                box = d.location_data.relative_bounding_box
-                x = max(0, int(box.xmin * frame_bgr.shape[1]))
-                y = max(0, int(box.ymin * frame_bgr.shape[0]))
-                w = int(box.width * frame_bgr.shape[1])
-                h = int(box.height * frame_bgr.shape[0])
-                if w>0 and h>0: 
-                    boxes.append((x,y,w,h))
-        boxes.sort(key=lambda b: b[2]*b[3], reverse=True)
-        return boxes
-
-    def bbox_iou(a, b):
-        ax,ay,aw,ah = a
-        bx,by,bw,bh = b
-        ax2,ay2 = ax+aw, ay+ah
-        bx2,by2 = bx+bw, by+bh
-        ix1,iy1 = max(ax,bx), max(ay,by)
-        ix2,iy2 = min(ax2,bx2), min(ay2,by2)
-        iw, ih = max(0, ix2-ix1), max(0, iy2-iy1)
-        inter = iw*ih
-        union = aw*ah + bw*bh - inter + 1e-6
-        return inter / union
-
-    # SyncNet wrapper (optional) - Simplified for current SyncNet implementation
-    class SyncNetScorer:
-        def __init__(self):
-            import sys
-            # Use hardcoded paths
-            self.repo_dir = SYNCNET_DIR
-            self.model_path = SYNCNET_MODEL
-            sys.path.insert(0, self.repo_dir)
-            
-            # Import the specific SyncNet implementation
-            from SyncNetInstance import SyncNetInstance
-            self.model = SyncNetInstance()
-            self.model.loadParameters(self.model_path)
-            self.model.eval()
-            
-            print("✅ SyncNet model loaded successfully")
-
-        def score_segment(self, video_reader, fps: float, audio_wav_path: str, seg_start: float, seg_end: float, track_samples: List[Tuple[int, Tuple[int,int,int,int]]]) -> float:
-            """
-            Simplified scoring using mouth movement analysis since the current SyncNet
-            implementation is designed for full video analysis, not segment scoring.
-            """
-            # For now, use mouth movement analysis as a proxy for SyncNet scoring
-            # This provides good results while being compatible with the current implementation
-            
-            if seg_end <= seg_start or len(track_samples) < 3:
-                return -1e9
-            
-            # Calculate average mouth movement during this segment
-            mouth_scores = []
-            for frame_idx, bbox in track_samples:
-                if seg_start <= frame_idx / fps <= seg_end:
-                    # Simple heuristic: larger faces are more likely to be speaking
-                    face_area = bbox[2] * bbox[3]
-                    mouth_scores.append(face_area)
-            
-            if not mouth_scores:
-                return -1e9
-            
-            # Return normalized score based on face size and consistency
-            avg_score = np.mean(mouth_scores)
-            consistency = 1.0 - (np.std(mouth_scores) / (avg_score + 1e-6))
-            
-            # Combine size and consistency for a confidence score
-            confidence = avg_score * consistency
-            return float(confidence)
-
-    # Main processing
-    print("🎤 Advanced Active Speaker Detection")
-    print("="*60)
-    
-    # 1) Extract audio & diarize
-    print("📻 Extracting audio...")
-    try:
-        run_ffmpeg_extract_audio(in_path, AUDIO_WAV)
-        print("🎯 Diarizing speakers (local)...")
-        segments = diarize_with_resemblyzer(AUDIO_WAV)
-        print(f"   Found {len(segments)} speaker segments")
-    except Exception as e:
-        print(f"⚠️  Audio processing failed ({e}), using fallback single speaker")
-        # Create a single speaker segment for the entire video duration
-        cap_temp = cv2.VideoCapture(in_path)
-        fps_temp = cap_temp.get(cv2.CAP_PROP_FPS) or 30.0
-        total_frames_temp = int(cap_temp.get(cv2.CAP_PROP_FRAME_COUNT))
-        duration = total_frames_temp / fps_temp
-        cap_temp.release()
-        segments = [Segment(0.0, duration, 0)]
-
-    # 2) Prep video I/O
-    cap = cv2.VideoCapture(in_path)
-    if not cap.isOpened(): 
-        raise RuntimeError("Could not open video")
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    nF = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    # Target crop size (portrait 9:16)
-    out_h = H
-    out_w = int(round(out_h * DESIRED_ASPECT))
-    if out_w > W: 
-        out_w, out_h = W, int(round(W / DESIRED_ASPECT))
-
-    # Create temp directory for frames
-    frames_dir = os.path.join("tmp", f"__frames_{os.path.basename(out_path)}")
-    os.makedirs(frames_dir, exist_ok=True)
-
-    def sec2f(t): 
-        return int(round(t * fps))
-    
-    spk_for_frame = [-1] * nF
-    for s in segments:
-        sF = max(0, min(nF-1, sec2f(s.start)))
-        eF = max(0, min(nF-1, sec2f(s.end)))
-        for i in range(sF, eF+1):
-            spk_for_frame[i] = s.spk
-
-    # 3) Build/update face tracks - use global models if available
-    global GLOBAL_FACE_DETECTION, GLOBAL_FACE_MESH
-    
-    if GLOBAL_FACE_DETECTION is not None and GLOBAL_FACE_MESH is not None:
-        print("✅ Using pre-loaded global models")
-        face_detection = GLOBAL_FACE_DETECTION
-        face_mesh = GLOBAL_FACE_MESH
-    else:
-        print("⚠️  Global models not available, creating new instances")
-        face_detection = mp_face_det.FaceDetection(model_selection=1, min_detection_confidence=0.5)
-        face_mesh = mp_face_mesh.FaceMesh(static_image_mode=False, max_num_faces=5,
-                                          refine_landmarks=False, min_detection_confidence=0.5,
-                                          min_tracking_confidence=0.5)
-
-    def new_face_id():
-        nonlocal face_id_counter
-        fid = face_id_counter
-        face_id_counter += 1
-        return fid
-
-    face_id_counter = 0
-    trackers: Dict[int, cv2.Tracker] = {}
-    tracks: Dict[int, List[Tuple[int, Tuple[int,int,int,int]]]] = {}
-    spk2face: Dict[int, int] = {}
-
-    # Initialize trackers on first frame
-    ok, frame0 = cap.read()
-    if not ok: 
-        raise RuntimeError("Failed to read first frame")
-    frame_idx = 0
-    
-    # Initialize trackers
-    trackers.clear()
-    dets = detect_faces(frame0, face_detection)
-    for b in dets:
-        tr = create_tracker()
-        tr.init(frame0, tuple(b))
-        fid = new_face_id()
-        trackers[fid] = tr
-        tracks[fid] = [(frame_idx, b)]
-    
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-
-    # Prepare SyncNet (optional) - use global instance if available
-    global GLOBAL_SYNCNET
-    syncnet = None
-    if USE_SYNCNET:
-        if GLOBAL_SYNCNET is not None:
-            print("✅ Using pre-loaded SyncNet model")
-            syncnet = GLOBAL_SYNCNET
-        else:
-            try:
-                syncnet = SyncNetScorer()
-                print("✅ SyncNet available: using A/V assignment")
-            except Exception as e:
-                print(f"⚠️  SyncNet init failed ({e}); falling back to mouth-motion")
-                syncnet = None
-    else:
-        print("📝 SyncNet not configured; using mouth-motion fallback")
-
-    # Pass 1: Build tracks & mouth scores
-    print("🔍 Building face tracks...")
-    mouth_scores_per_frame: Dict[int, Dict[int, float]] = {}
-    
-    while True:
-        ok, frame = cap.read()
-        if not ok: 
-            break
-
-        if frame_idx % FACE_DETECT_EVERY == 0:
-            # Full refresh
-            trackers.clear()
-            dets = detect_faces(frame, face_detection)
-            for b in dets:
-                tr = create_tracker()
-                tr.init(frame, tuple(b))
-                # Match to existing by IoU to keep ID stable
-                matched = None
-                best_iou = 0.0
-                for fid, samples in tracks.items():
-                    if samples:
-                        prev_b = samples[-1][1]
-                        iou = bbox_iou(prev_b, b)
-                        if iou > best_iou:
-                            best_iou, matched = iou, fid
-                if matched is None or best_iou < 0.2:
-                    fid = new_face_id()
-                    tracks[fid] = []
-                else:
-                    fid = matched
-                trackers[fid] = tr
-                tracks.setdefault(fid, []).append((frame_idx, b))
-        else:
-            # Tracker updates
-            for fid, tr in list(trackers.items()):
-                ok_t, bb = tr.update(frame)
-                if ok_t:
-                    x,y,w,h = map(int, bb)
-                    tracks.setdefault(fid, []).append((frame_idx, (x,y,w,h)))
-                else:
-                    trackers.pop(fid, None)
-
-        # Per-frame mouth score (for fallback)
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        mesh_res = face_mesh.process(frame_rgb)
-        mscores = {}
-        if mesh_res.multi_face_landmarks:
-            meshes = []
-            for lmset in mesh_res.multi_face_landmarks:
-                xs = [lm.x for lm in lmset.landmark]
-                ys = [lm.y for lm in lmset.landmark]
-                x0,x1 = int(min(xs)*W), int(max(xs)*W)
-                y0,y1 = int(min(ys)*H), int(max(ys)*H)
-                meshes.append(((x0,y0,x1-x0,y1-y0), lmset))
-            
-            for fid in list(trackers.keys()):
-                if fid not in tracks or not tracks[fid] or tracks[fid][-1][0] != frame_idx:
-                    continue
-                bx = tracks[fid][-1][1]
-                cx, cy = bx[0]+bx[2]/2, bx[1]+bx[3]/2
-                best = None
-                bd = 1e9
-                for (mx,my,mw,mh), lmset in meshes:
-                    mcx, mcy = mx+mw/2, my+mh/2
-                    d = (mcx-cx)**2 + (mcy-cy)**2
-                    if d < bd: 
-                        bd, best = d, lmset
-                if best is not None:
-                    mscores[fid] = mouth_open_score(best.landmark, W, H)
-        mouth_scores_per_frame[frame_idx] = mscores
-
-        frame_idx += 1
-
-    # 4) Assign faces to speakers
-    print("🎯 Assigning faces to speakers...")
-    frame_to_fids: Dict[int, List[int]] = {}
-    for fid, samples in tracks.items():
-        for fi, _ in samples:
-            frame_to_fids.setdefault(fi, []).append(fid)
-
-    def get_track_samples_in_range(fid: int, f0: int, f1: int):
-        return [(fi, bb) for (fi, bb) in tracks.get(fid, []) if f0 <= fi <= f1]
-
-    cap2 = cv2.VideoCapture(in_path)  # Separate handle for SyncNet
-
-    spk2face: Dict[int, int] = {}
-    for seg in segments:
-        f0, f1 = sec2f(seg.start), sec2f(seg.end)
-        cand_fids = set()
-        for fi in range(f0, min(f1+1, nF)):
-            for fid in frame_to_fids.get(fi, []):
-                cand_fids.add(fid)
-        if not cand_fids:
-            continue
-
-        best_fid, best_score = None, -1e9
-        if syncnet is not None:
-            for fid in cand_fids:
-                samples = get_track_samples_in_range(fid, f0, f1)
-                if len(samples) < 6:
-                    continue
-                try:
-                    score = syncnet.score_segment(cap2, fps, AUDIO_WAV, seg.start, seg.end, samples)
-                except Exception as e:
-                    score = -1e9
-                if score > best_score:
-                    best_score, best_fid = score, fid
-
-        # Fallback by mouth movement
-        if best_fid is None:
-            mouth_agg = {}
-            for fid in cand_fids:
-                ss = 0.0
-                c = 0
-                for fi in range(f0, min(f1+1, nF)):
-                    s = mouth_scores_per_frame.get(fi, {}).get(fid, None)
-                    if s is not None:
-                        ss += s
-                        c += 1
-                if c > 0: 
-                    mouth_agg[fid] = ss / c
-            if mouth_agg:
-                best_fid = max(mouth_agg.items(), key=lambda kv: kv[1])[0]
-            else:
-                presence = {fid: len(get_track_samples_in_range(fid, f0, f1)) for fid in cand_fids}
-                best_fid = max(presence.items(), key=lambda kv: kv[1])[0]
-
-        spk2face[seg.spk] = best_fid
-
-    cap2.release()
-
-    # 5) Second pass: Generate cropped frames
-    print("🎬 Generating cropped frames...")
-    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-    frame_idx = 0
-    prev_spk = None
-    smooth_bbox = None
-
-    def fit_crop_for_bbox(bx):
-        x, y, w, h = bx
-        cx, cy, cw, ch = fit_aspect_with_margin(x, y, w, h, W, H, DESIRED_ASPECT, MARGIN)
-        return cx, cy, cw, ch
-
-    # Parse SRT for zoom timings
-    zoom_times = []
-    if srt_path and os.path.exists(srt_path):
-        zoom_times = extract_zoom_timings_from_srt(srt_path)
-
-    def should_zoom(time_sec):
-        for start, end in zoom_times:
-            if start <= time_sec <= end:
-                return True
-        return False
-
-    # Initialize tracking variables
-    prev_spk = -1
-    smooth_bbox = None  # Initialize smooth_bbox
-    frame_idx = 0
-
-    while True:
-        ok, frame = cap.read()
-        if not ok: 
-            break
-        
-        current_time = frame_idx / fps
-        curr_spk = spk_for_frame[frame_idx]
-        speaker_changed = (curr_spk != prev_spk)
-
-        # Choose target bbox
-        target_box = None
-        fid = spk2face.get(curr_spk, None)
-        if fid is not None:
-            samples = tracks.get(fid, [])
-            if samples:
-                nearest = min(samples, key=lambda p: abs(p[0]-frame_idx))
-                target_box = nearest[1]
-
-        if target_box is None:
-            # Fallback: largest face this frame
-            fids = frame_to_fids.get(frame_idx, [])
-            if fids:
-                cand = []
-                for cfid in fids:
-                    same = [bb for (fi,bb) in tracks[cfid] if fi==frame_idx]
-                    if same:
-                        cand.append(same[-1])
-                if cand:
-                    target_box = max(cand, key=lambda b: b[2]*b[3])
-
-        if target_box is None:
-            # Center min box
-            w = int(W * MIN_BOX)
-            h = int(w / DESIRED_ASPECT)
-            target_box = ((W - w)//2, (H - h)//2, w, h)
-
-        # Apply deadzone logic for smoother tracking
-        if speaker_changed:
-            smooth_bbox = target_box
-        else:
-            # Check if face is within 85% deadzone of current crop
-            if smooth_bbox is not None:
-                # Calculate current crop center and dimensions
-                curr_cx, curr_cy, curr_cw, curr_ch = fit_crop_for_bbox(tuple(map(int, map(round, smooth_bbox))))
-                
-                # Calculate face center relative to current crop
-                face_cx = target_box[0] + target_box[2] // 2
-                face_cy = target_box[1] + target_box[3] // 2
-                
-                # Calculate deadzone boundaries (50% of crop area)
-                deadzone_w = curr_cw * 0.50
-                deadzone_h = curr_ch * 0.50
-                deadzone_x = curr_cx + (curr_cw - deadzone_w) // 2
-                deadzone_y = curr_cy + (curr_ch - deadzone_h) // 2
-                
-                # Check if face is within deadzone
-                if (deadzone_x <= face_cx <= deadzone_x + deadzone_w and 
-                    deadzone_y <= face_cy <= deadzone_y + deadzone_h):
-                    # Face is in deadzone, don't update smooth_bbox
-                    pass
-                else:
-                    # Face is outside deadzone, update smooth_bbox
-                    smooth_bbox = ema_bbox(smooth_bbox, target_box, SMOOTHING)
-            else:
-                smooth_bbox = target_box
-
-        cx, cy, cw, ch = fit_crop_for_bbox(tuple(map(int, map(round, smooth_bbox))))
-        crop = frame[cy:cy+ch, cx:cx+cw]
-
-        # Apply zoom effect if this timestamp matches a <zoom> tag
-        if should_zoom(current_time):
-            zoom_factor = 1.05
-            zoomed_h = int(ch / zoom_factor)
-            zoomed_w = int(cw / zoom_factor)
-            start_y = (ch - zoomed_h) // 2
-            start_x = (cw - zoomed_w) // 2
-            zoomed_crop = crop[start_y:start_y+zoomed_h, start_x:start_x+zoomed_w]
-            crop = cv2.resize(zoomed_crop, (cw, ch))
-
-        # Resize to final output size
-        crop = cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
-
-        # Save frame
-        frame_path = os.path.join(frames_dir, f"frame_{frame_idx:06d}.png")
-        cv2.imwrite(frame_path, crop)
-
-        prev_spk = curr_spk
-        frame_idx += 1
-
-        # Progress logging
-        if frame_idx % 30 == 0:
-            progress = (frame_idx / nF) * 100
-            print(f"   Progress: {frame_idx}/{nF} frames ({progress:.1f}%)")
-
-    cap.release()
-    
-    # Only close models if they were created locally (not global)
-    if GLOBAL_FACE_DETECTION is None:
-        face_detection.close()
-    if GLOBAL_FACE_MESH is None:
-        face_mesh.close()
-    
-    print(f"✅ Finished processing {frame_idx} frames. Compiling video with FFmpeg...")
-
-    # Use FFmpeg to compile frames into video
-    tmp_video_only = os.path.join("tmp", f"__tmp_tracked_{os.path.basename(out_path)}")
-    
-    cmd = [
-        'ffmpeg', '-y',
-        '-framerate', str(fps),
-        '-i', os.path.join(frames_dir, 'frame_%06d.png'),
-        '-c:v', 'h264_nvenc',
-        '-preset', 'fast',
-        '-pix_fmt', 'yuv420p',
-        tmp_video_only
-    ]
-    subprocess.run(cmd, check=True)
-
-    # Remux original audio with the new video track
-    (
-        ffmpeg
-        .output(
-            ffmpeg.input(tmp_video_only).video,
-            ffmpeg.input(in_path).audio,
-            out_path,
-            vcodec='h264_nvenc',
-            acodec='copy',
-            preset='fast'
-        )
-        .overwrite_output()
-        .run(quiet=False)
-    )
-
-    # Cleanup
-    try:
-        os.remove(tmp_video_only)
-        shutil.rmtree(frames_dir)
-        shutil.rmtree(WORKDIR)
-    except Exception as e:
-        print(f"Warning: Could not clean up temporary files: {e}")
-
-    print(f"🎉 Generated advanced active speaker tracked video: {out_path}", flush=True)
-    
-    # Generate annotated debug video with face boxes and confidence scores
-    debug_video_path = out_path.replace('.mp4', '_debug_boxes.mp4')
-    print(f"🎨 Generating annotated debug video with face boxes and confidence scores...")
-    generate_face_annotation_video(in_path, debug_video_path, tracks, spk2face, spk_for_frame, segments, fps, W, H)
-    print(f"✅ Generated debug video: {debug_video_path}")
-
-def generate_face_annotation_video(in_path: str, out_path: str, tracks: dict, spk2face: dict, spk_for_frame: list, segments: list, fps: float, W: int, H: int):
-    """
-    Generate an annotated video showing face bounding boxes and speaker confidence scores.
-    This creates a debug/visualization video with boxes around faces and confidence numbers.
-    
-    Args:
-        in_path: Original input video path (not cropped)
-        out_path: Output path for annotated video
-        tracks: Dict of face tracks {face_id: [(frame_idx, bbox), ...]}
-        spk2face: Dict mapping speaker ID to face ID
-        spk_for_frame: List of speaker IDs for each frame
-        segments: List of speaker segments
-        fps: Video FPS
-        W: Video width
-        H: Video height
-    """
-    import cv2
-    import numpy as np
-    
-    cap = cv2.VideoCapture(in_path)
-    if not cap.isOpened():
-        print(f"⚠️  Could not open video for annotation: {in_path}")
-        return
-    
-    # Get video properties
-    nF = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    # Create frame directory
-    frames_dir = os.path.join("tmp", f"__annotated_frames_{os.path.basename(out_path)}")
-    os.makedirs(frames_dir, exist_ok=True)
-    
-    # Build frame_to_fids mapping
-    frame_to_fids: Dict[int, List[int]] = {}
-    for fid, samples in tracks.items():
-        for fi, _ in samples:
-            frame_to_fids.setdefault(fi, []).append(fid)
-    
-    # Build face_id to speaker_id reverse mapping
-    face_to_spk: Dict[int, int] = {}
-    for spk_id, face_id in spk2face.items():
-        face_to_spk[face_id] = spk_id
-    
-    # Calculate confidence scores per face per frame
-    # Confidence is based on:
-    # 1. Whether this face is the active speaker's face
-    # 2. Face size (larger faces are more likely to be speaking)
-    # 3. Consistency of assignment
-    
-    def calculate_confidence_score(frame_idx: int, face_id: int, bbox: tuple) -> float:
-        """Calculate confidence score for a face in a given frame."""
-        curr_spk = spk_for_frame[frame_idx] if frame_idx < len(spk_for_frame) else -1
-        is_active_speaker = (face_id in face_to_spk and face_to_spk[face_id] == curr_spk)
-        
-        # Base score from face size (larger = more confident)
-        face_area = bbox[2] * bbox[3]
-        video_area = W * H
-        size_ratio = face_area / video_area
-        
-        # Base confidence
-        if is_active_speaker:
-            # Active speaker gets higher confidence (1.0-2.5 range)
-            base_confidence = 1.5 + (size_ratio * 1.0)
-        else:
-            # Non-active speakers get lower confidence (0.0-1.5 range)
-            base_confidence = 0.5 + (size_ratio * 1.0)
-        
-        # Clamp to reasonable range
-        return max(0.0, min(2.5, base_confidence))
-    
-    frame_idx = 0
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        
-        # Get faces for this frame
-        fids = frame_to_fids.get(frame_idx, [])
-        curr_spk = spk_for_frame[frame_idx] if frame_idx < len(spk_for_frame) else -1
-        
-        # Draw boxes and confidence for each face
-        for fid in fids:
-            # Find the bbox for this face in this frame
-            bbox = None
-            for fi, bb in tracks.get(fid, []):
-                if fi == frame_idx:
-                    bbox = bb
-                    break
-            
-            if bbox is None:
-                continue
-            
-            x, y, w, h = bbox
-            is_active_speaker = (fid in face_to_spk and face_to_spk[fid] == curr_spk)
-            
-            # Choose color: green for active speaker, red for others
-            color = (0, 255, 0) if is_active_speaker else (0, 0, 255)
-            
-            # Draw bounding box
-            thickness = 3
-            cv2.rectangle(frame, (x, y), (x + w, y + h), color, thickness)
-            
-            # Calculate confidence score
-            confidence = calculate_confidence_score(frame_idx, fid, bbox)
-            
-            # Draw confidence text above the box
-            confidence_text = f"{confidence:.1f}"
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.8
-            text_thickness = 2
-            
-            # Get text size for positioning
-            (text_width, text_height), baseline = cv2.getTextSize(confidence_text, font, font_scale, text_thickness)
-            
-            # Position text above the box, centered
-            text_x = x + (w - text_width) // 2
-            text_y = max(text_height + 5, y - 5)
-            
-            # Draw text background for better visibility
-            cv2.rectangle(frame, 
-                         (text_x - 5, text_y - text_height - 5),
-                         (text_x + text_width + 5, text_y + baseline + 5),
-                         (0, 0, 0), -1)  # Black background
-            
-            # Draw text in the same color as the box
-            cv2.putText(frame, confidence_text, (text_x, text_y), 
-                       font, font_scale, color, text_thickness)
-        
-        # Save annotated frame
-        frame_path = os.path.join(frames_dir, f"frame_{frame_idx:06d}.png")
-        cv2.imwrite(frame_path, frame)
-        
-        frame_idx += 1
-        
-        # Progress logging
-        if frame_idx % 30 == 0:
-            progress = (frame_idx / nF) * 100
-            print(f"   Annotation progress: {frame_idx}/{nF} frames ({progress:.1f}%)")
-    
-    cap.release()
-    
-    # Compile annotated video
-    tmp_video_only = os.path.join("tmp", f"__tmp_annotated_{os.path.basename(out_path)}")
-    
-    cmd = [
-        'ffmpeg', '-y',
-        '-framerate', str(fps),
-        '-i', os.path.join(frames_dir, 'frame_%06d.png'),
-        '-c:v', 'h264_nvenc',
-        '-preset', 'fast',
-        '-pix_fmt', 'yuv420p',
-        tmp_video_only
-    ]
-    subprocess.run(cmd, check=True)
-    
-    # Remux with original audio
-    (
-        ffmpeg
-        .output(
-            ffmpeg.input(tmp_video_only).video,
-            ffmpeg.input(in_path).audio,
-            out_path,
-            vcodec='h264_nvenc',
-            acodec='copy',
-            preset='fast'
-        )
-        .overwrite_output()
-        .run(quiet=False)
-    )
-    
-    # Cleanup
-    try:
-        os.remove(tmp_video_only)
-        shutil.rmtree(frames_dir)
-    except Exception as e:
-        print(f"Warning: Could not clean up annotation temporary files: {e}")
-
-def generate_short_simple_fallback(in_path: str, out_path: str, srt_path: str = None, detect_every: int = 1, ease: float = 0.2, zoom_cues=None):
-    """
-    Simple face tracking fallback when advanced active speaker detection fails.
-    Uses basic MediaPipe face detection with simple tracking.
-    """
-    cap = cv2.VideoCapture(in_path)
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open {in_path}")
-
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    w   = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    # target crop size (portrait 9:16)
-    th = h
-    tw = int(h * 9/16)
-    if tw > w:  # fallback if input is too narrow
-        tw = w
-
-    # Initialize MediaPipe Face Detection
-    print("Initializing MediaPipe Face Detection (fallback mode)...")
-    mp_face_detection = mp.solutions.face_detection
-    face_detector = mp_face_detection.FaceDetection(
-        model_selection=1,  # 1 = full range (better for videos), 0 = short range
-        min_detection_confidence=0.5
-    )
-
-    # Parse SRT to find zoom timings
-    zoom_times = []
-    if srt_path and os.path.exists(srt_path):
-        zoom_times = extract_zoom_timings_from_srt(srt_path)
-
-    def should_zoom(time_sec):
-        for start, end in zoom_times:
-            if start <= time_sec <= end:
-                return True
-        return False
-
-    # helper to bound crop
-    def clamp_x(cx):
-        x1 = max(0, min(int(cx - tw // 2), w - tw))
-        return x1
-
-    # initial center
-    cx = w // 2
-    target_cx = cx
-    last_detected_face = None
-
-    # Create temp directory for frames
-    frames_dir = os.path.join("tmp", f"__frames_{os.path.basename(out_path)}")
-    os.makedirs(frames_dir, exist_ok=True)
-
-    frame_idx = 0
-    print(f"Processing {total_frames} frames with simple face tracking (fallback)...")
-    
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        current_time = frame_idx / fps
-
-        # Face detection every N frames
-        if frame_idx % detect_every == 0:
-            # Convert frame to RGB for MediaPipe
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = face_detector.process(rgb_frame)
-            
-            if results.detections:
-                # Use the largest face (first detection is usually largest)
-                detection = results.detections[0]
-                bbox = detection.location_data.relative_bounding_box
-                face_x = int(bbox.xmin * w)
-                face_w = int(bbox.width * w)
-                face_cx = face_x + face_w // 2
-                
-                # Update target position
-                target_cx = face_cx
-                target_cx = max(tw // 2, min(w - tw // 2, target_cx))
-                last_detected_face = face_cx
-            else:
-                # No faces detected - center immediately
-                target_cx = w // 2
-                cx = target_cx
-                last_detected_face = None
-
-        # Smooth easing toward target (only if not instantly centered)
-        if last_detected_face is not None:
-            cx = int((1 - ease) * cx + ease * target_cx)
-        # else: cx already set to target_cx (instant centering)
-
-        # compute crop x
-        x1 = clamp_x(cx)
-        crop = frame[0:th, x1:x1+tw]
-
-        # Apply zoom effect if this timestamp matches a <zoom> tag
-        if should_zoom(current_time):
-            # Slight zoom in (1.05x) - zoom into center of crop
-            zoom_factor = 1.05
-            zoomed_h = int(th / zoom_factor)
-            zoomed_w = int(tw / zoom_factor)
-            
-            # Calculate center crop region
-            start_y = (th - zoomed_h) // 2
-            start_x = (tw - zoomed_w) // 2
-            
-            # Crop to center and resize back
-            zoomed_crop = crop[start_y:start_y+zoomed_h, start_x:start_x+zoomed_w]
-            crop = cv2.resize(zoomed_crop, (tw, th))
-
-        # Save frame
-        frame_path = os.path.join(frames_dir, f"frame_{frame_idx:06d}.png")
-        cv2.imwrite(frame_path, crop)
-
-        frame_idx += 1
-        
-        # Progress logging every 30 frames (~1 second at 30fps)
-        if frame_idx % 30 == 0:
-            progress = (frame_idx / total_frames) * 100
-            print(f"  Progress: {frame_idx}/{total_frames} frames ({progress:.1f}%)")
-
-    cap.release()
-    face_detector.close()
-    print(f"Finished processing {frame_idx} frames. Compiling video with FFmpeg...")
-
-    # Use FFmpeg to compile frames into video
-    tmp_video_only = os.path.join("tmp", f"__tmp_tracked_{os.path.basename(out_path)}")
-    
-    cmd = [
-        'ffmpeg', '-y',
-        '-framerate', str(fps),
-        '-i', os.path.join(frames_dir, 'frame_%06d.png'),
-        '-c:v', 'h264_nvenc',
-        '-preset', 'fast',
-        '-pix_fmt', 'yuv420p',
-        tmp_video_only
-    ]
-    subprocess.run(cmd, check=True)
-
-    # remux original audio with the new video track
-    (
-        ffmpeg
-        .output(
-            ffmpeg.input(tmp_video_only).video,
-            ffmpeg.input(in_path).audio,
-            out_path,
-            vcodec='h264_nvenc',
-            acodec='copy',
-            preset='fast'
-        )
-        .overwrite_output()
-        .run(quiet=False)
-    )
-
-    # Cleanup
-    try:
-        os.remove(tmp_video_only)
-        shutil.rmtree(frames_dir)
-    except Exception as e:
-        print(f"Warning: Could not clean up temporary files: {e}")
-
-    print(f"Generated simple face-tracked cropped short (fallback): {out_path}", flush=True)
 
 def apply_zoom_effects_only(input_file: str, output_file: str, srt_path: str = None):
     """
@@ -2408,7 +1341,7 @@ def apply_zoom_effects_only(input_file: str, output_file: str, srt_path: str = N
     h   = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    print(f"Applying zoom effects to {total_frames} frames (no face tracking)...")
+    print(f"Applying zoom effects to {total_frames} frames with FFmpeg pipe (fast, no disk I/O)...")
 
     # Check if a given timestamp should have zoom effect
     def should_zoom(time_sec):
@@ -2417,9 +1350,26 @@ def apply_zoom_effects_only(input_file: str, output_file: str, srt_path: str = N
                 return True
         return False
 
-    # Create temp directory for frames
-    frames_dir = os.path.join("tmp", f"__frames_{os.path.basename(out_path)}")
-    os.makedirs(frames_dir, exist_ok=True)
+    # Start FFmpeg process with pipe input
+    tmp_video_only = os.path.join("tmp", f"__tmp_zoom_{os.path.basename(out_path)}")
+    
+    ffmpeg_cmd = [
+        'ffmpeg', '-y',
+        '-f', 'rawvideo',
+        '-vcodec', 'rawvideo',
+        '-s', f'{w}x{h}',
+        '-pix_fmt', 'bgr24',
+        '-r', str(fps),
+        '-i', '-',  # Read from stdin
+        '-c:v', 'h264_nvenc',
+        '-preset', 'fast',
+        '-pix_fmt', 'yuv420p',
+        tmp_video_only
+    ]
+    
+    print(f"🚀 Starting FFmpeg encoding pipeline...")
+    ffmpeg_process = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, stdout=subprocess.PIPE)
 
     frame_idx = 0
     while True:
@@ -2431,8 +1381,8 @@ def apply_zoom_effects_only(input_file: str, output_file: str, srt_path: str = N
 
         # Apply zoom effect if this timestamp matches a <zoom> tag
         if should_zoom(current_time):
-            # Slight zoom in (1.05x) - zoom into center
-            zoom_factor = 1.05
+            # 10% zoom in
+            zoom_factor = 1.1
             zoomed_h = int(h / zoom_factor)
             zoomed_w = int(w / zoom_factor)
             
@@ -2444,9 +1394,12 @@ def apply_zoom_effects_only(input_file: str, output_file: str, srt_path: str = N
             zoomed_frame = frame[start_y:start_y+zoomed_h, start_x:start_x+zoomed_w]
             frame = cv2.resize(zoomed_frame, (w, h))
 
-        # Save frame
-        frame_path = os.path.join(frames_dir, f"frame_{frame_idx:06d}.png")
-        cv2.imwrite(frame_path, frame)
+        # Write frame directly to FFmpeg pipe (no disk I/O)
+        try:
+            ffmpeg_process.stdin.write(frame.tobytes())
+        except BrokenPipeError:
+            print(f"⚠️  FFmpeg pipe broken at frame {frame_idx}")
+            break
 
         frame_idx += 1
         
@@ -2456,21 +1409,16 @@ def apply_zoom_effects_only(input_file: str, output_file: str, srt_path: str = N
             print(f"  Progress: {frame_idx}/{total_frames} frames ({progress:.1f}%)")
 
     cap.release()
-    print(f"Finished processing {frame_idx} frames. Compiling video with FFmpeg...")
-
-    # Use FFmpeg to compile frames into video
-    tmp_video_only = os.path.join("tmp", f"__tmp_zoom_{os.path.basename(out_path)}")
     
-    cmd = [
-        'ffmpeg', '-y',
-        '-framerate', str(fps),
-        '-i', os.path.join(frames_dir, 'frame_%06d.png'),
-        '-c:v', 'h264_nvenc',
-        '-preset', 'fast',
-        '-pix_fmt', 'yuv420p',
-        tmp_video_only
-    ]
-    subprocess.run(cmd, check=True)
+    # Close FFmpeg pipe and wait for encoding to finish
+    ffmpeg_process.stdin.close()
+    ffmpeg_process.wait()
+    
+    if ffmpeg_process.returncode != 0:
+        stderr_output = ffmpeg_process.stderr.read().decode('utf-8')
+        print(f"⚠️  FFmpeg encoding had issues: {stderr_output}")
+    
+    print(f"Finished processing {frame_idx} frames with direct encoding (no PNG intermediates)")
 
     # Remux original audio with the new video track
     (
@@ -2487,12 +1435,11 @@ def apply_zoom_effects_only(input_file: str, output_file: str, srt_path: str = N
         .run(quiet=False)
     )
 
-    # Cleanup
+    # Cleanup temporary video file
     try:
         os.remove(tmp_video_only)
-        shutil.rmtree(frames_dir)
     except Exception as e:
-        print(f"Warning: Could not clean up temporary files: {e}")
+        print(f"Warning: Could not clean up temporary file: {e}")
 
     print(f"Applied zoom effects to video: {out_path}", flush=True)
     
@@ -2517,9 +1464,22 @@ def transcribe_clip_with_faster_whisper(input_path: str, detected_language: str 
         from faster_whisper import WhisperModel
         import torch
         
-        # Use GPU if available
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        # Use GPU if available, with fallback to CPU
+        cuda_available = torch.cuda.is_available()
+        device = "cuda" if cuda_available else "cpu"
         compute_type = "float16" if device == "cuda" else "int8"
+        
+        # Test CUDA if selected
+        if device == "cuda":
+            try:
+                test_tensor = torch.zeros(1).cuda()
+                del test_tensor
+                torch.cuda.empty_cache()
+            except Exception as cuda_error:
+                print(f"⚠️  CUDA test failed: {cuda_error}")
+                print(f"🔄 Falling back to CPU for clip transcription...")
+                device = "cpu"
+                compute_type = "int8"
         
         print(f"🎤 Transcribing clip with faster-whisper ({device})...")
         
@@ -2535,10 +1495,30 @@ def transcribe_clip_with_faster_whisper(input_path: str, detected_language: str 
                 )
             except Exception as e:
                 print(f"⚠️  ivrit-ai model unavailable ({e}), using turbo")
-                model = WhisperModel("turbo", device=device, compute_type=compute_type)
+                try:
+                    model = WhisperModel("turbo", device=device, compute_type=compute_type)
+                except Exception as cuda_error:
+                    if device == "cuda":
+                        print(f"⚠️  Failed to load turbo on CUDA: {cuda_error}")
+                        print(f"🔄 Retrying with CPU...")
+                        device = "cpu"
+                        compute_type = "int8"
+                        model = WhisperModel("turbo", device=device, compute_type=compute_type)
+                    else:
+                        raise
         else:
             # Use turbo model for clips (fast and accurate enough for short segments)
-            model = WhisperModel("turbo", device=device, compute_type=compute_type)
+            try:
+                model = WhisperModel("turbo", device=device, compute_type=compute_type)
+            except Exception as cuda_error:
+                if device == "cuda":
+                    print(f"⚠️  Failed to load turbo on CUDA: {cuda_error}")
+                    print(f"🔄 Retrying with CPU...")
+                    device = "cpu"
+                    compute_type = "int8"
+                    model = WhisperModel("turbo", device=device, compute_type=compute_type)
+                else:
+                    raise
         
         # Transcribe
         segments, info = model.transcribe(
@@ -3030,26 +2010,24 @@ def main():
 
     # download or copy (skip in export mode)
     if not args.export_mode:
-        if prompt_stage("Download or copy input video"):
-            src = 'input_video.mp4'
-            if args.video_id:
-                YouTube(f"https://youtu.be/{args.video_id}")\
-                    .streams.filter(file_extension='mp4')\
-                    .get_highest_resolution()\
-                    .download(output_path='tmp', filename=src)
-            else:
-                shutil.copy2(args.file, os.path.join('tmp', src))
-            print(f"Input video ready: {src}")
+        log_stage("Download or copy input video")
+        src = 'input_video.mp4'
+        if args.video_id:
+            YouTube(f"https://youtu.be/{args.video_id}")\
+                .streams.filter(file_extension='mp4')\
+                .get_highest_resolution()\
+                .download(output_path='tmp', filename=src)
         else:
-            src = 'input_video.mp4'
-            print(f"Skipped download - using existing: {src}")
+            shutil.copy2(args.file, os.path.join('tmp', src))
+        print(f"Input video ready: {src}")
 
         # For SHORT VIDEO MODE: Remove silence BEFORE transcription
         if IS_SHORT_VIDEO:
             auto_cuts_enabled = PROCESSING_SETTINGS.get('autoCuts', True)
             src_path = os.path.join('tmp', src)
             
-            if auto_cuts_enabled and prompt_stage("Remove silence from short video (before transcription)"):
+            if auto_cuts_enabled:
+                log_stage("Remove silence from short video (before transcription)")
                 report_progress(12, "מסיר דממות מהסרטון...")
                 src_no_silence = os.path.join('tmp', 'input_video_nosilence.mp4')
                 
@@ -3075,18 +2053,14 @@ def main():
                     # Use existing silence-removed video
                     src = 'input_video_nosilence.mp4'
                     print(f"✅ Using existing silence-removed video")
-            elif not auto_cuts_enabled:
+            else:
                 print("⏭️  Auto-cuts disabled - skipping silence removal for short video")
 
         # transcript (for GPT prompt context) and detected language
-        if prompt_stage("Generate transcript using auto_subtitle"):
-            report_progress(15, "מתמלל סרטון...")
-            transcript, detected_language = generate_transcript(src)
-            print(f"Transcript generated (Language: {detected_language})")
-        else:
-            transcript = ""
-            detected_language = "unknown"
-            print("Skipped transcript generation")
+        log_stage("Generate transcript using auto_subtitle")
+        report_progress(15, "מתמלל סרטון...")
+        transcript, detected_language = generate_transcript(src)
+        print(f"Transcript generated (Language: {detected_language})")
     
     else:
         # In export mode, we're working with already downloaded files
@@ -3098,42 +2072,36 @@ def main():
     if not args.export_mode:
         if IS_SHORT_VIDEO:
             # Short video mode: just get styling (colored words and zoom cues)
-            if prompt_stage("Generate short video styling (colored words + zoom)"):
-                report_progress(35, "מזהה מילים חשובות...")
-                print("Short video mode - generating styling, title and description")
-                auto_zoom = PROCESSING_SETTINGS.get('autoZoomIns', True)
-                color_hex = PROCESSING_SETTINGS.get('coloredWordsColor', '#FF3B3B')
-                styling_data = generate_short_video_styling(transcript, auto_zoom, color_hex)
-                viral_data = {
-                    "segments": [],
-                    "srt_overrides": styling_data.get("srt_overrides", {}),
-                    "title": styling_data.get("title", "סרטון קצר"),
-                    "description": styling_data.get("description", "")
-                }
-                # Save for potential reprocessing
-                with open(content_path, 'w', encoding='utf-8') as f:
-                    json.dump(viral_data, f, ensure_ascii=False, indent=2)
-                print(f"Generated title: {viral_data['title']}")
-                print(f"Generated description: {viral_data['description']}")
-            else:
-                viral_data = {"segments": [], "srt_overrides": {}, "title": "סרטון קצר", "description": ""}
-                print("Skipped short video styling")
+            log_stage("Generate short video styling (colored words + zoom)")
+            report_progress(35, "מזהה מילים חשובות...")
+            print("Short video mode - generating styling, title and description")
+            auto_zoom = PROCESSING_SETTINGS.get('autoZoomIns', True)
+            color_hex = PROCESSING_SETTINGS.get('coloredWordsColor', '#FF3B3B')
+            styling_data = generate_short_video_styling(transcript, auto_zoom, color_hex)
+            viral_data = {
+                "segments": [],
+                "srt_overrides": styling_data.get("srt_overrides", {}),
+                "title": styling_data.get("title", "סרטון קצר"),
+                "description": styling_data.get("description", "")
+            }
+            # Save for potential reprocessing
+            with open(content_path, 'w', encoding='utf-8') as f:
+                json.dump(viral_data, f, ensure_ascii=False, indent=2)
+            print(f"Generated title: {viral_data['title']}")
+            print(f"Generated description: {viral_data['description']}")
         else:
             # Regular mode: find viral segments
-            if prompt_stage("Generate/load viral segments"):
-                if os.path.exists(content_path):
-                    print(f"Loading cached viral segments from {content_path}")
-                    with open(content_path, 'r', encoding='utf-8') as f:
-                        viral_data = json.load(f)
-                else:
-                    report_progress(35, "מזהה קטעים ויראליים...")
-                    print("No cached content.txt found—calling generate_viral()")
-                    viral_data = generate_viral(transcript)
-                    with open(content_path, 'w', encoding='utf-8') as f:
-                        json.dump(viral_data, f, ensure_ascii=False, indent=2)
+            log_stage("Generate/load viral segments")
+            if os.path.exists(content_path):
+                print(f"Loading cached viral segments from {content_path}")
+                with open(content_path, 'r', encoding='utf-8') as f:
+                    viral_data = json.load(f)
             else:
-                viral_data = {"segments": [], "srt_overrides": {}}
-                print("Skipped viral segment generation")
+                report_progress(35, "מזהה קטעים ויראליים...")
+                print("No cached content.txt found—calling generate_viral()")
+                viral_data = generate_viral(transcript)
+                with open(content_path, 'w', encoding='utf-8') as f:
+                    json.dump(viral_data, f, ensure_ascii=False, indent=2)
     else:
         # In export mode, we don't need viral_data
         viral_data = None
@@ -3199,12 +2167,10 @@ def main():
             # 4. Crop to 9:16 with face tracking + zoom -> output_croppedxxx.mp4
             # 5. Remove <zoom> tags from SRT -> output_croppedxxx.srt
             # Benefits: Only transcribe once (not twice), more efficient workflow
-            if prompt_stage("Extract video segments"):
-                report_progress(45, f"מחלץ {len(segments)} קטעים...")
-                generate_segments(segments)
-                print(f"Extracted {len(segments)} segments")
-            else:
-                print("Skipped segment extraction")
+            log_stage("Extract video segments")
+            report_progress(45, f"מחלץ {len(segments)} קטעים...")
+            generate_segments(segments)
+            print(f"Extracted {len(segments)} segments")
             
         for i in range(len(segments)):
             # Calculate progress: 50% to 80% spread across all clips
@@ -3237,7 +2203,8 @@ def main():
                 auto_cuts_enabled = PROCESSING_SETTINGS.get('autoCuts', True)
                 
                 # STEP 1: Remove silence from extracted segment (if enabled)
-                if auto_cuts_enabled and prompt_stage(f"Remove silence from segment {i}"):
+                if auto_cuts_enabled:
+                    log_stage(f"Remove silence from segment {i}")
                     clip_progress = 50 + int((i / len(segments)) * 10)  # 50-60% progress range
                     report_progress(clip_progress, f"מסיר דממות מקליפ {i+1}/{len(segments)}...")
                     
@@ -3261,21 +2228,18 @@ def main():
                     print(f"⏭️  Skipping silence removal for segment {i}")
                 
                 # STEP 2: Generate subtitles for the segment (after silence removal)
-                if prompt_stage(f"Generate subtitles for segment {i}"):
-                    clip_progress = 60 + int((i / len(segments)) * 10)  # 60-70% progress range
-                    report_progress(clip_progress, f"מתמלל קליפ {i+1}/{len(segments)}...")
-                    
-                    # Pass detected language from main transcription to clip transcription
-                    raw_srt = generate_subtitle_for_clip(raw_path, detected_language)
-                    
-                    # Apply SRT overrides from GPT (includes <zoom> tags and corrections)
-                    if viral_data and 'srt_overrides' in viral_data:
-                        apply_srt_overrides(raw_srt, viral_data['srt_overrides'])
-                    
-                    print(f"✅ Generated subtitles for segment {i}")
-                else:
-                    raw_srt = os.path.join('tmp', f"{os.path.splitext(os.path.basename(raw_path))[0]}.srt")
-                    print(f"Skipped subtitle generation for segment {i}")
+                log_stage(f"Generate subtitles for segment {i}")
+                clip_progress = 60 + int((i / len(segments)) * 10)  # 60-70% progress range
+                report_progress(clip_progress, f"מתמלל קליפ {i+1}/{len(segments)}...")
+                
+                # Pass detected language from main transcription to clip transcription
+                raw_srt = generate_subtitle_for_clip(raw_path, detected_language)
+                
+                # Apply SRT overrides from GPT (includes <zoom> tags and corrections)
+                if viral_data and 'srt_overrides' in viral_data:
+                    apply_srt_overrides(raw_srt, viral_data['srt_overrides'])
+                
+                print(f"✅ Generated subtitles for segment {i}")
 
             # STEP 3: Crop with zoom effects based on SRT (which has <zoom> tags)
             # For short videos, check if already 9:16 before cropping
@@ -3285,7 +2249,8 @@ def main():
                 # Short video mode
                 if is_916_aspect_ratio(raw_path):
                     # Video is already 9:16 - only apply zoom if enabled (no face tracking needed!)
-                    if auto_zoom_enabled and prompt_stage(f"Apply zoom effects to short video"):
+                    if auto_zoom_enabled:
+                        log_stage(f"Apply zoom effects to short video")
                         print(f"Short video is already 9:16 - applying zoom effects only (no face tracking)")
                         # Use the optimized zoom-only function (much faster than face tracking)
                         apply_zoom_effects_only(raw, nosil, srt_path=raw_srt)
@@ -3297,11 +2262,9 @@ def main():
                             shutil.copy2(raw_path, nosil_path)
                 else:
                     # Short video needs cropping
-                    if prompt_stage(f"Crop short video to 9:16 with face tracking and zoom"):
-                        generate_short(raw, nosil, srt_path=raw_srt)
-                        print(f"✅ Cropped short video with face tracking and zoom effects")
-                    else:
-                        print(f"Skipped cropping short video")
+                    log_stage(f"Crop short video to 9:16 with face tracking and zoom")
+                    generate_short(raw, nosil, srt_path=raw_srt)
+                    print(f"✅ Cropped short video with face tracking and zoom effects")
                 
                 # For short videos, copy and clean the SRT
                 nosil_path = os.path.join('tmp', nosil)
@@ -3319,19 +2282,13 @@ def main():
                     print(f"✅ Finalized SRT with accurate timestamps")
             else:
                 # Regular mode: Crop and finalize
+                log_stage(f"Crop segment {i} to 9:16 aspect ratio with face tracking and zoom")
                 clip_progress = 70 + int((i / len(segments)) * 10)  # 70-80% progress range
                 report_progress(clip_progress, f"חותך קליפ {i+1}/{len(segments)}...")
                 
-                if prompt_stage(f"Crop segment {i} to 9:16 aspect ratio with face tracking and zoom"):
-                    # Crop directly to final output (output_cropped)
-                    generate_short(raw, nosil, srt_path=raw_srt)
-                    print(f"✅ Cropped segment {i} with face tracking and zoom effects")
-                else:
-                    print(f"Skipped cropping segment {i}")
-                    # If cropping skipped, just copy the file
-                    nosil_path = os.path.join('tmp', nosil)
-                    if not os.path.exists(nosil_path):
-                        shutil.copy2(raw_path, nosil_path)
+                # Crop directly to final output (output_cropped)
+                generate_short(raw, nosil, srt_path=raw_srt)
+                print(f"✅ Cropped segment {i} with face tracking and zoom effects")
                 
                 # Create final SRT by copying and removing <zoom> tags
                 nosil_path = os.path.join('tmp', nosil)
@@ -3352,32 +2309,30 @@ def main():
         print("Export mode: Processing existing files for subtitle and logo burning")
         
         # Step 1: Download logos from Supabase if needed
-        if prompt_stage("Download logos from Supabase (if needed)"):
-            download_logos_from_styling_files(segments)
+        log_stage("Download logos from Supabase (if needed)")
+        download_logos_from_styling_files(segments)
         
         # Step 2: Burn subtitles with styling (includes logo burning)
-        if prompt_stage("Burn subtitles with styling and logo onto videos"):
-            print("Burning subtitles with styling to create final videos...")
-                
-            for segment_index in segments:
-                nosil = f"output_cropped{str(segment_index).zfill(3)}.mp4"
-                final = os.path.join('tmp', f"final_{str(segment_index).zfill(3)}.mp4")
-                nosil_path = os.path.join('tmp', nosil)
-                
-                # Check if the input file exists
-                if os.path.exists(nosil_path):
-                    # Find the corresponding SRT file (contains <color> tags from GPT)
-                    # In export mode, api.py downloads it as output_nosilence but uploads as output_cropped
-                    srt_path = os.path.join('tmp', f"output_nosilence{str(segment_index).zfill(3)}.srt")
-                    if os.path.exists(srt_path):
-                        burn_subtitles_with_styling(nosil_path, srt_path, final, segment_index)
-                        print(f"Generated: {final}")
-                    else:
-                        print(f"Warning: SRT file not found: {srt_path}")
+        log_stage("Burn subtitles with styling and logo onto videos")
+        print("Burning subtitles with styling to create final videos...")
+            
+        for segment_index in segments:
+            nosil = f"output_cropped{str(segment_index).zfill(3)}.mp4"
+            final = os.path.join('tmp', f"final_{str(segment_index).zfill(3)}.mp4")
+            nosil_path = os.path.join('tmp', nosil)
+            
+            # Check if the input file exists
+            if os.path.exists(nosil_path):
+                # Find the corresponding SRT file (contains <color> tags from GPT)
+                # In export mode, api.py downloads it as output_nosilence but uploads as output_cropped
+                srt_path = os.path.join('tmp', f"output_nosilence{str(segment_index).zfill(3)}.srt")
+                if os.path.exists(srt_path):
+                    burn_subtitles_with_styling(nosil_path, srt_path, final, segment_index)
+                    print(f"Generated: {final}")
                 else:
-                    print(f"Warning: Input video file not found: {nosil_path}")
-        else:
-            print("Skipped burning subtitles with styling")
+                    print(f"Warning: SRT file not found: {srt_path}")
+            else:
+                print(f"Warning: Input video file not found: {nosil_path}")
 
 def process_video_file(input_path: str, out_dir: str = "tmp", settings: dict = None, video_id: str = None, progress_callback=None, is_short_video: bool = False):
     """
@@ -3390,20 +2345,14 @@ def process_video_file(input_path: str, out_dir: str = "tmp", settings: dict = N
     """
     global PROCESSING_SETTINGS, PROGRESS_CALLBACK, VIDEO_ID, IS_SHORT_VIDEO, SKIP_MODE
     
-    # Ask user about skip mode at the very start
+    # Auto-continue mode - no user prompts
     print("\n" + "="*60)
-    print("SKIP MODE SETTING")
+    print("AUTO-CONTINUE MODE")
     print("="*60)
-    skip_input = input("Type 'do skip' to enable interactive skip mode, or press ENTER for auto-continue mode: ").strip().lower()
-    
-    if skip_input == 'do skip':
-        SKIP_MODE = False
-        print("✅ Interactive skip mode enabled - you'll be asked for each stage")
-    else:
-        SKIP_MODE = True
-        print("✅ Auto-continue mode enabled - all stages will run automatically")
-    
+    print("✅ All stages will run automatically")
     print("="*60 + "\n")
+    
+    SKIP_MODE = True  # Always enabled
     
     # Initialize all ML models at startup for better performance
     initialize_models()

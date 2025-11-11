@@ -1,0 +1,104 @@
+# =============================================================================
+# ClipPeak - Requirements File
+# =============================================================================
+# This file contains all dependencies for:
+# - api.py (FastAPI backend)
+# - reelsfy_folder/reelsfy.py (video processing with TalkNet)
+# - fast-asd/talknet (TalkNet active speaker detection)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Web Framework & API (api.py)
+# -----------------------------------------------------------------------------
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+supabase>=2.0.0
+
+# -----------------------------------------------------------------------------
+# Deep Learning & ML Models
+# -----------------------------------------------------------------------------
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# IMPORTANT: For CUDA GPU support, ensure you have:
+# - CUDA Toolkit 11.8 or 12.1 installed
+# - Compatible NVIDIA drivers
+# Visit: https://pytorch.org/get-started/locally/
+
+# -----------------------------------------------------------------------------
+# Speech Recognition & Transcription
+# -----------------------------------------------------------------------------
+openai-whisper>=20231117
+faster-whisper>=1.0.0
+openai>=1.0.0
+
+# Audio processing (required by TalkNet)
+python_speech_features>=0.6
+soundfile>=0.12.0
+librosa>=0.10.0
+
+# Hugging Face for Hebrew model support
+transformers>=4.35.0
+huggingface-hub>=0.19.0
+
+# -----------------------------------------------------------------------------
+# Computer Vision & Video Processing
+# -----------------------------------------------------------------------------
+opencv-python>=4.8.0
+opencv-contrib-python>=4.8.0
+
+# -----------------------------------------------------------------------------
+# Video/Audio Processing
+# -----------------------------------------------------------------------------
+ffmpeg-python>=0.2.0
+pytube>=15.0.0
+
+# -----------------------------------------------------------------------------
+# Scientific Computing
+# -----------------------------------------------------------------------------
+numpy>=1.24.0,<2.0.0
+scipy>=1.11.0
+scikit-learn>=1.3.0
+python-dotenv>=1.0.0
+
+# -----------------------------------------------------------------------------
+# Utilities
+# -----------------------------------------------------------------------------
+# Progress bars
+tqdm>=4.66.0
+
+# HTTP requests
+requests>=2.31.0
+
+# -----------------------------------------------------------------------------
+# NOTES
+# -----------------------------------------------------------------------------
+# 1. CUDA Support:
+#    - Ensure CUDA Toolkit is installed for GPU acceleration
+#    - faster-whisper requires CUDA 11.x or 12.x
+#    - TalkNet requires CUDA for real-time processing
+#
+# 2. System Dependencies (install via system package manager):
+#    - ffmpeg (required for video/audio processing)
+#    - Windows: Download from https://ffmpeg.org/download.html
+#    - Linux: sudo apt install ffmpeg
+#
+# 3. Model Downloads:
+#    - TalkNet model (63MB) downloads automatically on first run
+#    - S3FD face detector (89MB) downloads automatically
+#    - Whisper models download on first use (150MB-3GB depending on model)
+#    - Hebrew model (ivrit-ai/whisper-large-v3-turbo-ct2) downloads from HuggingFace
+#
+# 4. Installation Order:
+#    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+#    pip install -r requirements.txt
+#
+# =============================================================================
+# Version Notes
+# =============================================================================
+# - numpy<2.0 required for compatibility with some dependencies
+# - opencv-python and opencv-contrib-python should match versions
+# - faster-whisper 1.0+ recommended for best performance
+# =============================================================================
