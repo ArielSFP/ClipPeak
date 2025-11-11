@@ -16,4 +16,3 @@ __pycache__/
 .env
 .env.local
 *.md
-Dockerfile
