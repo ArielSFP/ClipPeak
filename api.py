@@ -22,6 +22,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:8080",
         "http://192.168.1.32:8080",
+        "https://clippeak.co.il",
+        "https://www.clippeak.co.il",
          "*",  # (optional for local dev)
     ],
     allow_credentials=True,
@@ -359,7 +361,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     if os.path.exists("tmp"):
         try:
             shutil.rmtree("tmp")
-            print("✅ Deleted tmp/ folder")
+            print("�?Deleted tmp/ folder")
         except Exception as e:
             print(f"⚠️  Could not delete tmp/ folder: {e}")
     
@@ -367,7 +369,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     if os.path.exists("results"):
         try:
             shutil.rmtree("results")
-            print("✅ Deleted results/ folder")
+            print("�?Deleted results/ folder")
         except Exception as e:
             print(f"⚠️  Could not delete results/ folder: {e}")
     
@@ -375,7 +377,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     if os.path.exists(local_in):
         try:
             os.remove(local_in)
-            print(f"✅ Deleted downloaded video: {local_in}")
+            print(f"�?Deleted downloaded video: {local_in}")
         except Exception as e:
             print(f"⚠️  Could not delete {local_in}: {e}")
     
@@ -419,12 +421,12 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
                         except Exception as e:
                             print(f"⚠️  Could not delete {file_path}: {e}")
             
-            print(f"✅ Deleted {deleted_count} TalkNet temporary files from save/ folder (including pyavi/ and pycrop/)")
+            print(f"�?Deleted {deleted_count} TalkNet temporary files from save/ folder (including pyavi/ and pycrop/)")
         except Exception as e:
             print(f"⚠️  Could not access save/ folder: {e}")
     
     print("="*60)
-    print("✅ Cleanup complete!")
+    print("�?Cleanup complete!")
     print("="*60 + "\n")
     
     # Calculate and print total processing time
@@ -629,15 +631,15 @@ def run_export_processing(
                         if file_exists:
                             print(f"⚠️  File already exists in Supabase: {video_filename}, deleting old version...")
                             supabase.storage.from_("processed-videos").remove([dest_path])
-                            print(f"✅ Deleted old file from Supabase: {video_filename}")
+                            print(f"�?Deleted old file from Supabase: {video_filename}")
                         else:
-                            print(f"✅ No existing file found in Supabase, will upload new file: {video_filename}")
+                            print(f"�?No existing file found in Supabase, will upload new file: {video_filename}")
                     except Exception as e:
                         print(f"⚠️  Could not check/delete existing file (may not exist): {e}")
                     
                     # Upload the new file
                     supabase.storage.from_("processed-videos").upload(dest_path, local_path)
-                    print(f"✅ Uploaded final video: {video_filename} (from {fname})")
+                    print(f"�?Uploaded final video: {video_filename} (from {fname})")
                     
                 except ValueError as e:
                     print(f"⚠️  Could not parse short index from filename {fname}: {e}")
@@ -668,7 +670,7 @@ def run_export_processing(
                         edited_srt_content.encode('utf-8'),
                         {"content-type": "text/plain"}
                     )
-                    print(f"✅ Uploaded edited SRT: {srt_filename}")
+                    print(f"�?Uploaded edited SRT: {srt_filename}")
                 except Exception as e:
                     print(f"Warning: Could not upload edited SRT {srt_filename}: {e}")
         print("Finished uploading final videos")
@@ -679,7 +681,7 @@ def run_export_processing(
             "status": "completed",
             "export_ready": True  # NEW: Notify frontend that export is ready
         }).eq("id", video_id).execute()
-        print(f"✅ Export processing completed for video {video_id}")
+        print(f"�?Export processing completed for video {video_id}")
         print(f"   Frontend will be notified via real-time subscription")
         
     except Exception as e:
