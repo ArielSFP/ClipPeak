@@ -197,8 +197,32 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     # Use explicit is_short_video flag from frontend (already passed to this function)
     print(f"Short video mode: {is_short_video}")
     
-    process_video_file(local_in, out_dir="tmp", settings=settings, video_id=video_id, 
-                      progress_callback=update_progress, is_short_video=is_short_video)
+    try:
+        process_video_file(local_in, out_dir="tmp", settings=settings, video_id=video_id, 
+                          progress_callback=update_progress, is_short_video=is_short_video)
+    except Exception as e:
+        import traceback
+        print(f"\n{'='*60}")
+        print(f"❌ ERROR: Video processing failed!")
+        print(f"{'='*60}")
+        print(f"Error: {e}")
+        print(f"\nFull traceback:")
+        traceback.print_exc()
+        print(f"{'='*60}\n")
+        
+        # Update video status to failed
+        try:
+            supabase.table("videos").update({
+                "status": "failed",
+                "progress": 0
+            }).eq("id", video_id).execute()
+            print(f"✅ Updated video status to 'failed' in database")
+        except Exception as db_error:
+            print(f"⚠️  Could not update video status: {db_error}")
+        
+        # Don't continue with uploads/cleanup if processing failed
+        print(f"❌ Aborting processing pipeline due to error")
+        return
 
     # Create consistent folder name in storage (e.g. user123/filename-without-ext)
     # The file_key format is: user_id/timestamp.mp4 (e.g., 6ff414f2-0f7d-463a-af6c-f86dc1073d2e/1760477721689.mp4)
@@ -620,8 +644,30 @@ def run_export_processing(
         # 6) Process with export mode (this will create final_xxx.mp4 files)
         print("Processing videos with export mode (burn subtitles, add logos, add music)...")
         # We don't need to pass a file path since we're working with already downloaded files
-        process_export_file("", out_dir="tmp")
-        print("Finished processing export files")
+        try:
+            process_export_file("", out_dir="tmp")
+            print("Finished processing export files")
+        except Exception as e:
+            import traceback
+            print(f"\n{'='*60}")
+            print(f"❌ ERROR: Export processing failed!")
+            print(f"{'='*60}")
+            print(f"Error: {e}")
+            print(f"\nFull traceback:")
+            traceback.print_exc()
+            print(f"{'='*60}\n")
+            
+            # Update video status to failed
+            try:
+                supabase.table("videos").update({
+                    "status": "failed",
+                    "export_ready": False
+                }).eq("id", video_id).execute()
+                print(f"✅ Updated video status to 'failed' in database")
+            except Exception as db_error:
+                print(f"⚠️  Could not update video status: {db_error}")
+            
+            return
         
         # 7) Upload final videos and edited SRT files
         print("Uploading final videos to Supabase Storage...")
