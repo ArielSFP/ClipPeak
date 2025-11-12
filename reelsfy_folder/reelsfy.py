@@ -544,6 +544,10 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
         
         # Transcribe with optimal settings
         print(f"⏳ Transcribing {input_file}...")
+        print(f"   Video path: {video_path}")
+        print(f"   Language: {detected_language}")
+        print(f"   Device: {device}")
+        
         segments, info = model.transcribe(
             video_path,
             beam_size=5,
@@ -553,27 +557,77 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
             condition_on_previous_text=True
         )
         
+        print(f"   Transcription generator created, processing segments...")
+        
         # Convert segments to SRT format
         print("📝 Writing SRT file...")
-        with open(srt_path, 'w', encoding='utf-8') as f:
-            segment_list = list(segments)
-            for i, segment in enumerate(segment_list, start=1):
-                start_time = format_timestamp_srt(segment.start)
-                end_time = format_timestamp_srt(segment.end)
-                text = segment.text.strip()
-                
-                f.write(f"{i}\n")
-                f.write(f"{start_time} --> {end_time}\n")
-                f.write(f"{text}\n\n")
+        segment_list = list(segments)
+        print(f"📊 Total segments to write: {len(segment_list)}")
         
-        print(f"✅ Transcription complete: {srt_path}")
-        print(f"📊 Total segments: {len(segment_list)}")
+        if len(segment_list) == 0:
+            print("⚠️  WARNING: No segments returned from transcription!")
+            print("   Creating empty SRT file")
+            with open(srt_path, 'w', encoding='utf-8') as f:
+                f.write("")  # Empty file
+        else:
+            written_count = 0
+            with open(srt_path, 'w', encoding='utf-8') as f:
+                for i, segment in enumerate(segment_list, start=1):
+                    start_time = format_timestamp_srt(segment.start)
+                    end_time = format_timestamp_srt(segment.end)
+                    text = segment.text.strip()
+                    
+                    if i <= 3:  # Log first 3 segments for debugging
+                        print(f"   Segment {i}: [{segment.start:.2f}s - {segment.end:.2f}s] '{text[:50]}...'")
+                    
+                    if text:  # Only write non-empty segments
+                        f.write(f"{i}\n")
+                        f.write(f"{start_time} --> {end_time}\n")
+                        f.write(f"{text}\n\n")
+                        written_count += 1
+                    else:
+                        print(f"   ⚠️  Skipping empty segment {i}")
+            
+            print(f"   Wrote {written_count} non-empty segments to SRT")
+        
+        # Verify SRT was written
+        if os.path.exists(srt_path):
+            file_size = os.path.getsize(srt_path)
+            print(f"✅ Transcription complete: {srt_path}")
+            print(f"📊 Total segments: {len(segment_list)}")
+            print(f"📁 SRT file size: {file_size} bytes")
+            if file_size == 0:
+                print(f"⚠️  WARNING: SRT file is empty (0 bytes)!")
+        else:
+            print(f"❌ ERROR: SRT file was not created!")
+        
         print("="*60 + "\n")
         
         # Clean up
         del model
         if device == "cuda":
             torch.cuda.empty_cache()
+        
+        # Check if SRT is empty and try auto_subtitle as fallback
+        if os.path.exists(srt_path) and os.path.getsize(srt_path) == 0:
+            print("\n" + "="*60)
+            print("⚠️  EMPTY SRT FROM FASTER-WHISPER - TRYING AUTO_SUBTITLE")
+            print("="*60)
+            print(f"faster-whisper created an empty SRT file.")
+            print(f"Attempting fallback to auto_subtitle...")
+            
+            cmd = f"auto_subtitle tmp/{input_file} --srt_only True --output_srt True -o tmp/ --model turbo"
+            print(f"Running: {cmd}")
+            result = subprocess.call(cmd, shell=True)
+            
+            if result == 0 and os.path.exists(srt_path) and os.path.getsize(srt_path) > 0:
+                print(f"✅ auto_subtitle created valid SRT: {os.path.getsize(srt_path)} bytes")
+                return (open(srt_path, 'r', encoding='utf-8').read(), detected_language)
+            else:
+                print(f"❌ auto_subtitle also failed or created empty SRT")
+                print("="*60 + "\n")
+                # Will be handled by the calling code to set status to failed
+                raise RuntimeError("Transcription failed: Both faster-whisper and auto_subtitle produced empty results")
         
         return (open(srt_path, 'r', encoding='utf-8').read(), detected_language)
         
@@ -1518,7 +1572,7 @@ def transcribe_clip_with_faster_whisper(input_path: str, detected_language: str 
                     else:
                         raise
         else:
-            # Use turbo model for clips (fast and accurate enough for short segments)
+             # Use turbo model for clips (fast and accurate enough for short segments)
             try:
                 model = WhisperModel("turbo", device=device, compute_type=compute_type)
             except Exception as cuda_error:
