@@ -88,6 +88,11 @@ def initialize_models():
     """Initialize TalkNet model at startup for better performance."""
     global GLOBAL_TALKNET, GLOBAL_TALKNET_DET
     
+    # Check if models are already loaded
+    if GLOBAL_TALKNET is not None and GLOBAL_TALKNET_DET is not None:
+        print("✅ TalkNet models already loaded, skipping initialization")
+        return
+    
     print("🚀 Initializing TalkNet Active Speaker Detection...")
     
     try:
@@ -2419,8 +2424,8 @@ def process_video_file(input_path: str, out_dir: str = "tmp", settings: dict = N
     
     SKIP_MODE = True  # Always enabled
     
-    # Initialize all ML models at startup for better performance
-    initialize_models()
+    # Note: Models are now initialized in api.py before time.sleep(5) to save time
+    # initialize_models() is called there, not here
     
     # Store callback and video_id globally for use in main()
     PROGRESS_CALLBACK = progress_callback

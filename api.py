@@ -7,7 +7,7 @@ import re
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, BackgroundTasks
 from supabase import create_client
-from reelsfy_folder.reelsfy import process_video_file, process_export_file  # your existing script, refactored into importable functions
+from reelsfy_folder.reelsfy import process_video_file, process_export_file, initialize_models  # your existing script, refactored into importable functions
 
 # Load Supabase credentials from environment variables (Cloud Run secrets)
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://bzyclxmakfklbxnsradh.supabase.co/")
@@ -18,6 +18,23 @@ print(f"🔐 Using Supabase URL: {SUPABASE_URL}")
 print(f"🔐 Supabase key loaded: {SUPABASE_KEY[:20]}..." if SUPABASE_KEY else "🔐 No Supabase key found")
 
 app = FastAPI()
+
+# Load TalkNet models at startup (once per container, stays in memory)
+@app.on_event("startup")
+async def startup_event():
+    """Initialize models when FastAPI starts - they'll stay loaded for all requests."""
+    print("\n" + "="*60)
+    print("🚀 FASTAPI STARTUP: Loading TalkNet models...")
+    print("="*60)
+    try:
+        initialize_models()
+        print("✅ TalkNet models loaded and cached in memory")
+        print("   Models will be reused for all subsequent requests")
+        print("="*60 + "\n")
+    except Exception as e:
+        print(f"⚠️  Warning: Failed to load TalkNet models at startup: {e}")
+        print("   Models will be loaded on first video request instead")
+        print("="*60 + "\n")
 
 # CORS
 app.add_middleware(
@@ -49,15 +66,19 @@ async def health_check():
     """Health check endpoint for monitoring and load balancer."""
     try:
         import torch
+        from reelsfy_folder.reelsfy import GLOBAL_TALKNET, GLOBAL_TALKNET_DET
+        
         gpu_available = torch.cuda.is_available()
         gpu_count = torch.cuda.device_count() if gpu_available else 0
         gpu_name = torch.cuda.get_device_name(0) if gpu_available else "None"
+        models_loaded = GLOBAL_TALKNET is not None and GLOBAL_TALKNET_DET is not None
         
         return {
             "status": "healthy",
             "gpu_available": gpu_available,
             "gpu_count": gpu_count,
             "gpu_name": gpu_name,
+            "models_loaded": models_loaded,
             "supabase_connected": bool(SUPABASE_URL and SUPABASE_KEY),
             "openai_configured": bool(os.environ.get("OPENAI_API_KEY"))
         }
@@ -151,13 +172,30 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     # Start timing
     start_time = time.time()
     
-    # 0) Find the video's UUID in the videos table
+    # 0) Ensure models are loaded (should already be loaded at startup, but check anyway)
+    print("\n" + "="*60)
+    print("STAGE: Check TalkNet models")
+    print("="*60)
+    
+    # Check if models are already loaded (they should be from startup)
+    from reelsfy_folder.reelsfy import GLOBAL_TALKNET, GLOBAL_TALKNET_DET
+    if GLOBAL_TALKNET is None or GLOBAL_TALKNET_DET is None:
+        print("⚠️  Models not loaded at startup, loading now (14s)...\n")
+        try:
+            initialize_models()
+            print("✅ TalkNet models loaded successfully\n")
+        except Exception as e:
+            print(f"❌ Failed to load TalkNet models: {e}")
+            print("⚠️  Video processing may fail without TalkNet\n")
+    else:
+        print("✅ TalkNet models already loaded from startup (0s)\n")
+    
+    # 1) Find the video's UUID in the videos table
     print("\n" + "="*60)
     print("STAGE: Find video UUID in database")
     print("="*60)
     print("▶️  RUNNING: Find video UUID in database (auto-continue mode)\n")
     
-    time.sleep(5)
 
     resp = supabase.table("videos").select("id").eq("file_url", file_key).execute()
     if not resp.data or len(resp.data) == 0:
