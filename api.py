@@ -1,4 +1,5 @@
 import os
+import glob
 import shutil
 import subprocess
 import json
@@ -539,6 +540,69 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     print(f"Finished run_reelsfy process.")
 
 
+def clear_tmp_export_artifacts():
+    """Remove stale export artifacts so per-clip exports don't mix with previous runs."""
+    patterns = [
+        "tmp/output_cropped*.mp4",
+        "tmp/output_cropped*.srt",
+        "tmp/output_croppedwithoutcutting*.mp4",
+        "tmp/output_nosilence*.mp4",
+        "tmp/output_nosilence*.srt",
+        "tmp/final_*.mp4",
+        "tmp/styling_data_*.json",
+        "tmp/logo_*.png",
+    ]
+
+    for pattern in patterns:
+        for path in glob.glob(pattern):
+            try:
+                if os.path.isdir(path):
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    os.remove(path)
+            except FileNotFoundError:
+                continue
+            except Exception as exc:
+                print(f"⚠️  Could not remove {path}: {exc}")
+
+
+def delete_supabase_file(storage_path: str):
+    """Best-effort delete for a processed-videos file."""
+    try:
+        supabase.storage.from_("processed-videos").remove([storage_path])
+        print(f"🗑️  Removed existing file (if any): {storage_path}")
+    except Exception as exc:
+        message = str(exc).lower()
+        if "not found" in message or "does not exist" in message:
+            print(f"ℹ️  No existing file to delete at {storage_path}")
+        else:
+            print(f"⚠️  Could not delete {storage_path}: {exc}")
+
+
+def upload_with_overwrite(dest_path: str, payload, file_options=None, description: str = ""):
+    """Upload to Supabase storage after ensuring previous versions are deleted."""
+    delete_supabase_file(dest_path)
+
+    options = dict(file_options or {})
+    options.setdefault("upsert", "true")
+
+    def _attempt_upload():
+        return supabase.storage.from_("processed-videos").upload(dest_path, payload, options)
+
+    try:
+        _attempt_upload()
+        print(f"📤 Uploaded {description or dest_path}")
+    except Exception as exc:
+        message = str(exc)
+        if "Duplicate" in message or "409" in message or "already exists" in message.lower():
+            print(f"⚠️  Duplicate detected for {dest_path}, retrying after forced delete...")
+            delete_supabase_file(dest_path)
+            _attempt_upload()
+            print(f"📤 Uploaded {description or dest_path} after retry")
+        else:
+            raise
+
+
 def run_export_processing(
     user_folder_id: str, 
     video_folder_name: str, 
@@ -578,6 +642,10 @@ def run_export_processing(
         print(f"📋 First short data: {first_short}")
     
     try:
+        # Ensure working directories exist
+        os.makedirs("tmp", exist_ok=True)
+        os.makedirs("results", exist_ok=True)
+        clear_tmp_export_artifacts()
         
         # Use folder info from parameters (sent from frontend)
         video_output_dir = f"{user_folder_id}/{video_folder_name}"
@@ -738,25 +806,11 @@ def run_export_processing(
                     video_filename = f"{safe_title}.mp4"
                     dest_path = f"{video_output_dir}/{video_filename}"
                     
-                    # Check if file exists in Supabase storage and delete it
-                    print(f"🔍 Checking Supabase storage for existing file: {dest_path}")
-                    try:
-                        # List files in the video output directory
-                        existing_files = supabase.storage.from_("processed-videos").list(video_output_dir)
-                        file_exists = any(f['name'] == video_filename for f in existing_files if 'name' in f)
-                        
-                        if file_exists:
-                            print(f"⚠️  File already exists in Supabase: {video_filename}, deleting old version...")
-                            supabase.storage.from_("processed-videos").remove([dest_path])
-                            print(f"�?Deleted old file from Supabase: {video_filename}")
-                        else:
-                            print(f"�?No existing file found in Supabase, will upload new file: {video_filename}")
-                    except Exception as e:
-                        print(f"⚠️  Could not check/delete existing file (may not exist): {e}")
-                    
-                    # Upload the new file
-                    supabase.storage.from_("processed-videos").upload(dest_path, local_path)
-                    print(f"�?Uploaded final video: {video_filename} (from {fname})")
+                    upload_with_overwrite(
+                        dest_path,
+                        local_path,
+                        description=f"final video {video_filename} (from {fname})"
+                    )
                     
                 except ValueError as e:
                     print(f"⚠️  Could not parse short index from filename {fname}: {e}")
@@ -782,12 +836,12 @@ def run_export_processing(
                 srt_key = f"{video_output_dir}/{srt_filename}"
                 
                 try:
-                    supabase.storage.from_("processed-videos").upload(
-                        srt_key, 
+                    upload_with_overwrite(
+                        srt_key,
                         edited_srt_content.encode('utf-8'),
-                        {"content-type": "text/plain"}
+                        {"content-type": "text/plain"},
+                        description=f"SRT {srt_filename}"
                     )
-                    print(f"�?Uploaded edited SRT: {srt_filename}")
                 except Exception as e:
                     print(f"Warning: Could not upload edited SRT {srt_filename}: {e}")
         print("Finished uploading final videos")

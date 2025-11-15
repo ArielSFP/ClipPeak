@@ -32,9 +32,11 @@ import subprocess
 import argparse
 import math
 import re
+import io
 from datetime import datetime
 import unicodedata as ud
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 import ffmpeg
@@ -44,10 +46,7 @@ import mediapipe as mp
 
 # --- Config / Keys ---
 # Load from environment variable (Cloud Run secret) with fallback for local dev
-OPENAI_API_KEY = os.environ.get(
-    'OPENAI_API_KEY',
-    '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'
-)
+OPENAI_API_KEY = 'JvsYUG4uvvZtzdCmdlyhBjRXLbUYIlw3ww53WR-_ASeC6lnRGgs31M3KSls2X7bPZqo3T3BlbkFJgNhfHRgUmDVo6KhP1_gxWS3Odg5c-z8Dko5bJxXWhaMALE18qj0J-u_Ta5WqJFReHytEqDkOQ' #removed A from last index and sk-proj-Wx_5pt from start
 
 # Set up OpenAI client
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -64,8 +63,12 @@ PROCESSING_SETTINGS = {
     'numberOfClips': 3,
     'minClipLength': 25,
     'maxClipLength': 180,
-    'customTopics': []
+    'customTopics': [],
+    'subscriptionPlan': 'free'
 }
+
+# Tracks source video FPS for the current processing session
+SOURCE_VIDEO_FPS = None
 
 # Global progress tracking (set via process_video_file)
 PROGRESS_CALLBACK = None
@@ -159,6 +162,54 @@ def sec_to_srt_ts(sec):
     h = total // 3600
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
+def seconds_to_timestamp_str(sec: float) -> str:
+    """Format seconds into HH:MM:SS.mmm string for JSON metadata."""
+    sec = max(0.0, float(sec))
+    milliseconds = int(round(sec * 1000))
+    hours = milliseconds // 3_600_000
+    milliseconds %= 3_600_000
+    minutes = milliseconds // 60_000
+    milliseconds %= 60_000
+    seconds = milliseconds // 1_000
+    milliseconds %= 1_000
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+
+def get_video_fps(video_path: str):
+    """
+    Return the floating-point FPS of the first video stream, or None if unknown.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=r_frame_rate",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                video_path
+            ],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        fps_str = result.stdout.strip()
+        if not fps_str:
+            return None
+        if "/" in fps_str:
+            num, denom = fps_str.split("/", 1)
+            denom_val = float(denom)
+            if denom_val == 0:
+                return None
+            return float(num) / denom_val
+        return float(fps_str)
+    except Exception as e:
+        print(f"⚠️  Could not determine FPS for {video_path}: {e}")
+        return None
+
+def format_fps_value(fps: float) -> str:
+    if fps.is_integer():
+        return str(int(fps))
+    return f"{fps:.3f}".rstrip("0").rstrip(".")
+
 # --- BiDi detection ---
 def dominant_strong_direction(s: str) -> str:
     cnt = Counter(ud.bidirectional(c) for c in s)
@@ -183,30 +234,56 @@ def extract_zoom_timings_from_srt(srt_path: str):
     
     return zoom_times
 
-def apply_srt_overrides(srt_path: str, srt_overrides: dict):
+def apply_srt_overrides(srt_path: str, srt_overrides: dict, clip_index: int = 0):
     """
-    Apply SRT overrides (with <zoom> tags) to specific subtitle entries.
+    Apply SRT overrides (with <zoom> tags) to specific subtitle entries for a given clip.
     
     Args:
         srt_path: Path to SRT file
-        srt_overrides: Dict mapping subtitle index (as string) to corrected text with <zoom> tags
+        srt_overrides: Dict mapping "clip_index:subtitle_index" (1-based) to corrected text.
+                       Legacy keys without clip prefix default to clip 0.
+        clip_index: Zero-based clip identifier.
     """
     if not srt_overrides:
         return
     
     try:
         entries = parse_srt(srt_path)
+
+        def parse_key(key: str):
+            if ':' in key:
+                clip_str, sub_str = key.split(':', 1)
+                try:
+                    clip_val = int(clip_str.strip())
+                except (ValueError, TypeError):
+                    clip_val = None
+            else:
+                clip_val = None
+                sub_str = key
+            try:
+                sub_val = int(sub_str.strip())
+            except (ValueError, TypeError):
+                sub_val = None
+            return clip_val, sub_val
         
-        # Apply overrides by subtitle index (1-based)
-        for idx_str, new_text in srt_overrides.items():
-            idx = int(idx_str) - 1  # Convert to 0-based
+        applied = 0
+        for key, new_text in srt_overrides.items():
+            clip_val, subtitle_val = parse_key(key)
+            if subtitle_val is None:
+                continue
+            target_clip = clip_index if clip_val is None else clip_val
+            if target_clip != clip_index:
+                continue
+            idx = subtitle_val - 1
             if 0 <= idx < len(entries):
                 entries[idx]['text'] = new_text
-                print(f"Applied SRT override for subtitle {idx_str}: {new_text}")
+                applied += 1
+                print(f"Applied SRT override for clip {clip_index}, subtitle {subtitle_val}: {new_text}")
         
         # Write back the updated SRT
         write_srt_entries(entries, srt_path, rtl_wrap=True)
-        print(f"Applied {len(srt_overrides)} SRT overrides to {srt_path}")
+        if applied:
+            print(f"Applied {applied} SRT overrides to {srt_path}")
     except Exception as e:
         print(f"Warning: Could not apply SRT overrides to {srt_path}: {e}")
 
@@ -329,6 +406,152 @@ def enforce_srt_word_chunks(entries, max_words=5, min_dur=1.0):
         out.extend(merged)
 
     return out
+
+def chunk_segments_with_word_timestamps(segment_list, max_words=6):
+    """
+    Convert Whisper segments (with word timestamps) into subtitle entries capped at max_words each.
+    Falls back to whole-segment timing if per-word timestamps are missing.
+    """
+    entries = []
+
+    def emit_from_words(word_buffer, segment):
+        if not word_buffer:
+            return None
+        start = word_buffer[0].start if word_buffer[0].start is not None else segment.start
+        end = word_buffer[-1].end if word_buffer[-1].end is not None else segment.end
+        if start is None or end is None or end <= start:
+            start = segment.start
+            end = segment.end
+        text = "".join([w.word or "" for w in word_buffer]).strip()
+        if not text:
+            return None
+        return {"start": float(start), "end": float(end), "text": text}
+
+    word_token_re = re.compile(r'\w', re.UNICODE)
+
+    for segment in segment_list:
+        segment_text = (segment.text or "").strip()
+        words = getattr(segment, "words", None)
+
+        if not words:
+            if segment_text:
+                entries.append({"start": float(segment.start), "end": float(segment.end), "text": segment_text})
+            continue
+
+        buffer = []
+        real_word_count = 0
+
+        for word in words:
+            token = word.word
+            if token is None:
+                continue
+            if not token.strip():
+                # Skip pure whitespace tokens entirely
+                continue
+
+            buffer.append(word)
+            if word_token_re.search(token):
+                real_word_count += 1
+
+            if real_word_count >= max_words:
+                entry = emit_from_words(buffer, segment)
+                if entry:
+                    entries.append(entry)
+                buffer = []
+                real_word_count = 0
+
+        if buffer:
+            entry = emit_from_words(buffer, segment)
+            if entry:
+                entries.append(entry)
+
+    return entries
+
+def normalize_clip_segments(segments, min_length, max_length, video_duration=None):
+    """
+    Adjust GPT-provided segments so they adhere to min/max duration and stay within video length.
+    Returns True if any changes were made.
+    """
+    if not segments:
+        return False
+
+    try:
+        min_len = max(0.0, float(min_length))
+    except (TypeError, ValueError):
+        min_len = 0.0
+
+    try:
+        max_len = float(max_length)
+    except (TypeError, ValueError):
+        max_len = min_len or 180.0
+
+    if max_len < min_len:
+        max_len = min_len
+
+    total_duration = None
+    if video_duration is not None:
+        try:
+            total_duration = max(0.0, float(video_duration))
+        except (TypeError, ValueError):
+            total_duration = None
+
+    changed = False
+
+    for seg in segments:
+        start = to_seconds(seg.get('start_time', 0))
+        end = to_seconds(seg.get('end_time', start))
+
+        start = max(0.0, start)
+        if end <= start:
+            end = start
+
+        duration = end - start
+        desired_duration = duration
+        if desired_duration < min_len:
+            desired_duration = min_len
+        if desired_duration > max_len:
+            desired_duration = max_len
+        if total_duration is not None and desired_duration > total_duration:
+            desired_duration = total_duration
+
+        end = start + desired_duration
+
+        if total_duration is not None and end > total_duration:
+            shift = end - total_duration
+            start = max(0.0, start - shift)
+            end = start + desired_duration
+            if end > total_duration:
+                end = total_duration
+                start = max(0.0, end - desired_duration)
+
+        final_duration = max(0.0, end - start)
+        if final_duration < min_len and total_duration is not None and total_duration >= min_len:
+            end = min(total_duration, start + min_len)
+            start = max(0.0, end - min_len)
+            final_duration = end - start
+
+        new_start = seconds_to_timestamp_str(start)
+        new_end = seconds_to_timestamp_str(end)
+        new_duration = round(final_duration, 3)
+
+        prev_duration = seg.get('duration')
+        try:
+            prev_duration_val = round(float(prev_duration), 3)
+        except (TypeError, ValueError):
+            prev_duration_val = None
+
+        if (
+            seg.get('start_time') != new_start
+            or seg.get('end_time') != new_end
+            or prev_duration_val != new_duration
+        ):
+            changed = True
+
+        seg['start_time'] = new_start
+        seg['end_time'] = new_end
+        seg['duration'] = new_duration
+
+    return changed
 
 # --- Helper: Check if video has audio stream ---
 def has_audio_stream(video_path: str) -> bool:
@@ -559,7 +782,8 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
             language=detected_language,
             vad_filter=True,  # Voice activity detection for better accuracy
             vad_parameters=dict(min_silence_duration_ms=500),
-            condition_on_previous_text=True
+            condition_on_previous_text=True,
+            word_timestamps=True
         )
         
         print(f"   Transcription generator created, processing segments...")
@@ -567,7 +791,7 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
         # Convert segments to SRT format
         print("📝 Writing SRT file...")
         segment_list = list(segments)
-        print(f"📊 Total segments to write: {len(segment_list)}")
+        print(f"📊 Total segments returned: {len(segment_list)}")
         
         if len(segment_list) == 0:
             print("⚠️  WARNING: No segments returned from transcription!")
@@ -575,24 +799,79 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
             with open(srt_path, 'w', encoding='utf-8') as f:
                 f.write("")  # Empty file
         else:
+            srt_entries = chunk_segments_with_word_timestamps(segment_list, max_words=6)
+            print(f"✂️  Subtitle entries after 6-word chunking: {len(srt_entries)}")
+
+            if not srt_entries:
+                print("⚠️  WARNING: No subtitle entries after chunking, creating empty SRT")
+                with open(srt_path, 'w', encoding='utf-8') as f:
+                    f.write("")
+            else:
+                preview_count = min(3, len(srt_entries))
+                for preview_idx in range(preview_count):
+                    subtitle = srt_entries[preview_idx]
+                    preview_text = subtitle["text"]
+                    print(
+                        f"   Subtitle {preview_idx+1}: "
+                        f"[{subtitle['start']:.2f}s - {subtitle['end']:.2f}s] '{preview_text[:50]}...'"
+                    )
+
+                max_workers = min(8, os.cpu_count() or 8)
+                use_parallel = max_workers > 1 and len(srt_entries) >= 200
             written_count = 0
-            with open(srt_path, 'w', encoding='utf-8') as f:
-                for i, segment in enumerate(segment_list, start=1):
-                    start_time = format_timestamp_srt(segment.start)
-                    end_time = format_timestamp_srt(segment.end)
-                    text = segment.text.strip()
-                    
-                    if i <= 3:  # Log first 3 segments for debugging
-                        print(f"   Segment {i}: [{segment.start:.2f}s - {segment.end:.2f}s] '{text[:50]}...'")
-                    
-                    if text:  # Only write non-empty segments
+
+            if use_parallel:
+                total_entries = len(srt_entries)
+                chunk_size = max(64, total_entries // (max_workers * 2) or 1)
+                chunk_payloads = []
+
+                def render_chunk(task):
+                    chunk_index, first_idx, chunk_entries = task
+                    buffer = io.StringIO()
+                    chunk_written = 0
+                    for offset, entry in enumerate(chunk_entries):
+                        idx = first_idx + offset
+                        text = entry["text"]
+                        if not text:
+                            continue
+                        start_time = format_timestamp_srt(entry["start"])
+                        end_time = format_timestamp_srt(entry["end"])
+                        buffer.write(f"{idx}\n")
+                        buffer.write(f"{start_time} --> {end_time}\n")
+                        buffer.write(f"{text}\n\n")
+                        chunk_written += 1
+                    return chunk_index, buffer.getvalue(), chunk_written
+
+                tasks = []
+                for chunk_index, start_idx in enumerate(range(0, total_entries, chunk_size)):
+                    chunk_entries = srt_entries[start_idx:start_idx + chunk_size]
+                    tasks.append((chunk_index, start_idx + 1, chunk_entries))
+
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    results = [executor.submit(render_chunk, task) for task in tasks]
+                    for future in results:
+                        chunk_payloads.append(future.result())
+
+                chunk_payloads.sort(key=lambda x: x[0])
+
+                with open(srt_path, 'w', encoding='utf-8') as f:
+                    for _, chunk_data, chunk_written in chunk_payloads:
+                        if chunk_data:
+                            f.write(chunk_data)
+                        written_count += chunk_written
+            else:
+                with open(srt_path, 'w', encoding='utf-8') as f:
+                    for i, entry in enumerate(srt_entries, start=1):
+                        text = entry["text"]
+                        if not text:
+                            continue
+                        start_time = format_timestamp_srt(entry["start"])
+                        end_time = format_timestamp_srt(entry["end"])
                         f.write(f"{i}\n")
                         f.write(f"{start_time} --> {end_time}\n")
                         f.write(f"{text}\n\n")
                         written_count += 1
-                    else:
-                        print(f"   ⚠️  Skipping empty segment {i}")
-            
+
             print(f"   Wrote {written_count} non-empty segments to SRT")
         
         # Verify SRT was written
@@ -771,7 +1050,7 @@ def generate_short_video_styling(transcript: str, auto_zoom: bool, color_hex: st
         '  "title": "כותרת מעניינת לסרטון #תגית1 #תגית2",\n'
         '  "description": "תיאור קצר ומעניין של הסרטון בעד 20 מילים #תגית",\n'
         '  "srt_overrides": {\n'
-        '    "1": "'
+        '    "0:1": "'
     )
     
     # Show example with both zoom and color if both enabled
@@ -781,7 +1060,7 @@ def generate_short_video_styling(transcript: str, auto_zoom: bool, color_hex: st
         user += f'<color:{color_hex}>מילה</color> חשובה'
     
     user += f'",\n'
-    user += '    "2": "..."\n'
+    user += '    "0:2": "..."\n'
     user += '  }\n'
     user += '}\n\n'
     user += (
@@ -791,20 +1070,19 @@ def generate_short_video_styling(transcript: str, auto_zoom: bool, color_hex: st
         "3) אל תשנה את המבנה או סדר המילים\n"
         "4) כותרת: קצרה ויראלית עם תגיות (#)\n"
         "5) תיאור: עד 20 מילים, מעניין, עם תגיות\n"
-        "6) החזר JSON תקין בלבד, ללא הסברים\n\n"
+        "6) החזר JSON תקין בלבד, ללא הסברים\n"
+        "7) הערכים בתוך srt_overrides חייבים להשתמש במפתח \"<מספר קליפ>:<מספר כתובית>\" (בסרטון קצר תמיד מספר הקליפ הוא 0)\n\n"
         f"תמליל:\n{transcript}\n"
     )
     
     try:
         # Call OpenAI API
         resp = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0,
+            model="gpt-5-nano",
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user}
             ],
-            max_tokens=2500
         )
         text = resp.choices[0].message.content.strip()
         
@@ -905,6 +1183,13 @@ def generate_viral(transcript: str) -> dict:
             f"**חובה: כל קטע חייב להיות באורך של לפחות {min_length} שניות ולכל היותר {max_length} שניות.**\n"
             f"**אל תיצור קטעים קצרים מ-{min_length} שניות!**\n\n"
         )
+
+    length_requirement = (
+        f"⚠️ כל קטע חייב להימשך בין {min_length} ל-{max_length} שניות. "
+        "אם קטע יוצא קצר או ארוך יותר – התאם את נקודות ההתחלה/סיום עד שהוא בטווח. "
+        "קטעים מחוץ לטווח אינם מתקבלים."
+    )
+    user += length_requirement + "\n\n"
     
     # Add JSON structure
     user += (
@@ -923,7 +1208,7 @@ def generate_viral(transcript: str) -> dict:
         user += ',\n      "zoom_cues": [ { "subtitle_index": 1 } ]'
     
     user += '\n    }\n  ],\n  "srt_overrides": {\n'
-    user += '    "<מספר כתובית>": "'
+    user += '    "<מספר קליפ>:<מספר כתובית>": "'
     
     # Show example with both zoom and color if both enabled
     if auto_zoom and auto_colored:
@@ -952,8 +1237,12 @@ def generate_viral(transcript: str) -> dict:
         f"9) ודא שהשדות start_time ו-end_time בפורמט מחרוזת: \"HH:MM:SS.mmm\" (עם מרכאות!).\n"
     )
     
+    user += (
+        "10) הערכים במילון srt_overrides חייבים להשתמש במפתח \"<מספר קליפ>:<מספר כתובית>\" (מספר קליפ הוא האינדקס ברשימת הקטעים, החל מ-0).\n"
+    )
+    
     # Add zoom requirement if enabled
-    requirement_num = 10
+    requirement_num = 11
     if auto_zoom:
         user += (
             f"{requirement_num}) בחר *כתוביות (לפי מספר)* שבהן כדאי לבצע *זום מהיר קטן*, "
@@ -994,13 +1283,11 @@ def generate_viral(transcript: str) -> dict:
         
         # Call OpenAI API
         resp = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0,
+            model="gpt-5-nano",
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user}
             ],
-            max_tokens=2500
         )
         text = resp.choices[0].message.content.strip()
         
@@ -1030,6 +1317,25 @@ def generate_viral(transcript: str) -> dict:
 
 # --- Segment extraction / crop ---
 def generate_segments(segments):
+    global SOURCE_VIDEO_FPS, PROCESSING_SETTINGS
+
+    plan = (PROCESSING_SETTINGS.get('subscriptionPlan') or 'free').lower()
+    source_fps = SOURCE_VIDEO_FPS
+    fps_override = None
+
+    if source_fps and source_fps > 30.0:
+        if plan in ('pro', 'premium'):
+            if source_fps > 60.0:
+                fps_override = 60.0
+        else:
+            fps_override = 30.0
+
+    if fps_override:
+        if plan in ('pro', 'premium'):
+            print(f"🎞️  {plan.capitalize()} plan detected: limiting extracted segments to 60 FPS (source: {source_fps:.2f} FPS)")
+        else:
+            print(f"🎞️  {plan.capitalize()} plan detected: downsampling extracted segments to 30 FPS (source: {source_fps:.2f} FPS)")
+
     for i, seg in enumerate(segments):
         out = os.path.join('tmp', f"output{str(i).zfill(3)}.mp4")
         if os.path.exists(out):
@@ -1049,9 +1355,14 @@ def generate_segments(segments):
         if dur < 25:  end = start + 25
         if dur > 180: end = start + 180
 
+        video_filters = ["scale=1920:1080"]
+        if fps_override:
+            video_filters.append(f"fps={format_fps_value(fps_override)}")
+        filter_expr = ",".join(video_filters)
+
         cmd = (
             f"ffmpeg -y -hwaccel cuda -i tmp/input_video.mp4 "
-            f"-ss {start} -to {end} -vf scale=1920:1080 "
+            f"-ss {start} -to {end} -vf \"{filter_expr}\" "
             f"-c:v h264_nvenc -preset fast -c:a copy {out}"
         )
         subprocess.call(cmd, shell=True)
@@ -1289,8 +1600,8 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
                 face_cx = target_box[0] + target_box[2] // 2
                 face_cy = target_box[1] + target_box[3] // 2
                 
-                # Deadzone (50% of crop area)
-                deadzone_w = cw * 0.50
+                # Deadzone (30% width, 50% height of crop area)
+                deadzone_w = cw * 0.30
                 deadzone_h = ch * 0.50
                 deadzone_x = cx + (cw - deadzone_w) // 2
                 deadzone_y = cy + (ch - deadzone_h) // 2
@@ -1577,7 +1888,7 @@ def transcribe_clip_with_faster_whisper(input_path: str, detected_language: str 
                     else:
                         raise
         else:
-             # Use turbo model for clips (fast and accurate enough for short segments)
+            # Use turbo model for clips (fast and accurate enough for short segments)
             try:
                 model = WhisperModel("turbo", device=device, compute_type=compute_type)
             except Exception as cuda_error:
@@ -2078,6 +2389,9 @@ def main():
         results_dir = None
         content_path = None
 
+    src = None
+    video_duration_seconds = None
+
     # download or copy (skip in export mode)
     if not args.export_mode:
         log_stage("Download or copy input video")
@@ -2126,6 +2440,18 @@ def main():
             else:
                 print("⏭️  Auto-cuts disabled - skipping silence removal for short video")
 
+        src_full_path = os.path.join('tmp', src)
+        video_duration_seconds = ffprobe_duration(src_full_path)
+        if video_duration_seconds:
+            print(f"🎞️  Active video duration: {video_duration_seconds:.2f}s")
+        else:
+            print("⚠️  Could not determine video duration (ffprobe failed)")
+        SOURCE_VIDEO_FPS = get_video_fps(src_full_path)
+        if SOURCE_VIDEO_FPS:
+            print(f"🎞️  Detected source FPS: {SOURCE_VIDEO_FPS:.2f}")
+        else:
+            print("⚠️  Could not determine source FPS (defaulting to pass-through)")
+
         # transcript (for GPT prompt context) and detected language
         log_stage("Generate transcript using auto_subtitle")
         report_progress(15, "מתמלל סרטון...")
@@ -2172,6 +2498,18 @@ def main():
                 viral_data = generate_viral(transcript)
                 with open(content_path, 'w', encoding='utf-8') as f:
                     json.dump(viral_data, f, ensure_ascii=False, indent=2)
+
+            if viral_data.get('segments'):
+                adjusted = normalize_clip_segments(
+                    viral_data['segments'],
+                    PROCESSING_SETTINGS.get('minClipLength', 25),
+                    PROCESSING_SETTINGS.get('maxClipLength', 180),
+                    video_duration_seconds
+                )
+                if adjusted:
+                    print("⚖️  Adjusted GPT clip timings to match min/max duration constraints")
+                    with open(content_path, 'w', encoding='utf-8') as f:
+                        json.dump(viral_data, f, ensure_ascii=False, indent=2)
     else:
         # In export mode, we don't need viral_data
         viral_data = None
@@ -2222,7 +2560,7 @@ def main():
             input_srt = os.path.join('tmp', f"{os.path.splitext(src)[0]}.srt")
             if os.path.exists(input_srt):
                 if viral_data and 'srt_overrides' in viral_data:
-                    apply_srt_overrides(input_srt, viral_data['srt_overrides'])
+                    apply_srt_overrides(input_srt, viral_data['srt_overrides'], clip_index=0)
                     print("Applied styling to SRT (colored words and zoom)")
             else:
                 print(f"Warning: SRT not found: {input_srt}")
@@ -2307,7 +2645,7 @@ def main():
                 
                 # Apply SRT overrides from GPT (includes <zoom> tags and corrections)
                 if viral_data and 'srt_overrides' in viral_data:
-                    apply_srt_overrides(raw_srt, viral_data['srt_overrides'])
+                    apply_srt_overrides(raw_srt, viral_data['srt_overrides'], clip_index=i)
                 
                 print(f"✅ Generated subtitles for segment {i}")
 
@@ -2385,7 +2723,7 @@ def main():
         # Step 2: Burn subtitles with styling (includes logo burning)
         log_stage("Burn subtitles with styling and logo onto videos")
         print("Burning subtitles with styling to create final videos...")
-            
+                
         for segment_index in segments:
             nosil = f"output_cropped{str(segment_index).zfill(3)}.mp4"
             final = os.path.join('tmp', f"final_{str(segment_index).zfill(3)}.mp4")
@@ -2413,7 +2751,9 @@ def process_video_file(input_path: str, out_dir: str = "tmp", settings: dict = N
     progress_callback: Function to call with (video_id, progress, stage, eta) to update progress
     is_short_video: If True, use simplified processing for videos under 3 minutes
     """
-    global PROCESSING_SETTINGS, PROGRESS_CALLBACK, VIDEO_ID, IS_SHORT_VIDEO, SKIP_MODE
+    global PROCESSING_SETTINGS, PROGRESS_CALLBACK, VIDEO_ID, IS_SHORT_VIDEO, SKIP_MODE, SOURCE_VIDEO_FPS
+    
+    SOURCE_VIDEO_FPS = None
     
     # Auto-continue mode - no user prompts
     print("\n" + "="*60)
@@ -2437,6 +2777,10 @@ def process_video_file(input_path: str, out_dir: str = "tmp", settings: dict = N
         print("📋 USING CUSTOM PROCESSING SETTINGS")
         print("="*60)
         PROCESSING_SETTINGS.update(settings)
+        if 'subscriptionPlan' not in settings:
+            PROCESSING_SETTINGS['subscriptionPlan'] = 'free'
+    else:
+        PROCESSING_SETTINGS['subscriptionPlan'] = 'free'
         print(f"Auto-Colored Words: {PROCESSING_SETTINGS['autoColoredWords']}")
         print(f"Color: {PROCESSING_SETTINGS['coloredWordsColor']}")
         print(f"Auto Zoom-Ins: {PROCESSING_SETTINGS['autoZoomIns']}")
