@@ -1372,14 +1372,18 @@ def generate_segments(segments):
         if dur < 25:  end = start + 25
         if dur > 180: end = start + 180
 
-        # Prefer GPU scaling; fall back handled by ffmpeg if unavailable
-        video_filters = ["scale_npp=1920:1080"]
+        # Use regular scale filter (works with CUDA hardware acceleration)
+        # Note: scale_npp requires NPP support which may not be available in all FFmpeg builds
+        video_filters = ["scale=1920:1080"]
         if fps_override:
             video_filters.append(f"fps={format_fps_value(fps_override)}")
         filter_expr = ",".join(video_filters)
 
+        # Note: When using CUDA hardware acceleration, we decode to CUDA memory
+        # but scale filter works on CPU frames, so we don't use -hwaccel_output_format cuda here
+        # The h264_nvenc encoder will handle GPU encoding efficiently
         cmd = (
-            f"ffmpeg -y -hwaccel cuda -hwaccel_output_format cuda -i tmp/input_video.mp4 "
+            f"ffmpeg -y -hwaccel cuda -i tmp/input_video.mp4 "
             f"-ss {start} -to {end} -vf \"{filter_expr}\" "
             f"-c:v h264_nvenc -preset fast -c:a copy {out}"
         )
@@ -1408,6 +1412,10 @@ def generate_short(input_file: str, output_file: str, srt_path: str = None, dete
     if os.path.exists(out_path):
         print(f"Skipping cropping, exists: {out_path}")
         return
+
+    # Validate input video file before processing
+    if not validate_video_file(in_path):
+        raise RuntimeError(f"Input video file is invalid or corrupted: {in_path}")
 
     # TalkNet is required - no fallbacks
     global GLOBAL_TALKNET, GLOBAL_TALKNET_DET
@@ -1439,10 +1447,14 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
     print("🎤 TalkNet Active Speaker Detection")
     print("="*60)
     
+    # Validate input video file before processing
+    if not validate_video_file(in_path):
+        raise RuntimeError(f"Input video file is invalid or corrupted: {in_path}")
+    
     # Get video properties
     cap = cv2.VideoCapture(in_path)
     if not cap.isOpened():
-        raise RuntimeError("Could not open video")
+        raise RuntimeError(f"Could not open video file: {in_path}")
     fps = cap.get(cv2.CAP_PROP_FPS)
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -2076,7 +2088,12 @@ def remove_silence_with_ffmpeg(input_video: str, output_video: str,
         if not silences:
             print("   No silence detected, copying original video")
             shutil.copy2(input_video, output_video)
-            return True
+            # Validate the copied file
+            if validate_video_file(output_video):
+                return True
+            else:
+                print(f"❌ Copied video file is invalid: {output_video}")
+                return False
         
         print(f"   Found {len(silences)//2} silence periods")
         
@@ -2126,14 +2143,24 @@ def remove_silence_with_ffmpeg(input_video: str, output_video: str,
                     output_video
                 ]
             
-            subprocess.run(command, check=True, capture_output=True)
+            result = subprocess.run(command, check=False, capture_output=True, text=True)
             
-            if os.path.exists(output_video):
-                print(f"✅ Successfully removed silence: {output_video}")
-                return True
-            else:
-                print(f"⚠️  Output file not created")
+            if result.returncode != 0:
+                print(f"❌ FFmpeg failed with return code {result.returncode}")
+                print(f"   stderr: {result.stderr[:500]}")  # First 500 chars of error
                 return False
+            
+            if not os.path.exists(output_video):
+                print(f"⚠️  Output file not created: {output_video}")
+                return False
+            
+            # Validate the output video file
+            if not validate_video_file(output_video):
+                print(f"❌ Output video file is corrupted or invalid: {output_video}")
+                return False
+            
+            print(f"✅ Successfully removed silence: {output_video}")
+            return True
         finally:
             # Cleanup temp files
             try:
@@ -2233,6 +2260,61 @@ def has_audio_stream(path: str) -> bool:
         )
         return bool(p.stdout.strip())
     except Exception:
+        return False
+
+def validate_video_file(video_path: str) -> bool:
+    """
+    Validate that a video file exists, is not empty, and can be opened.
+    Returns True if valid, False otherwise.
+    """
+    if not os.path.exists(video_path):
+        print(f"❌ Video file does not exist: {video_path}")
+        return False
+    
+    # Check file size
+    file_size = os.path.getsize(video_path)
+    if file_size == 0:
+        print(f"❌ Video file is empty (0 bytes): {video_path}")
+        return False
+    
+    if file_size < 1024:  # Less than 1KB is suspicious
+        print(f"⚠️  Video file is very small ({file_size} bytes): {video_path}")
+    
+    # Try to open with OpenCV
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            print(f"❌ Could not open video file with OpenCV: {video_path}")
+            cap.release()
+            return False
+        
+        # Try to read first frame
+        ret, frame = cap.read()
+        cap.release()
+        
+        if not ret or frame is None:
+            print(f"❌ Could not read frames from video: {video_path}")
+            return False
+        
+        # Check with ffprobe to ensure it's a valid video file
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1",
+             video_path],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        if result.returncode != 0:
+            print(f"❌ Video file is corrupted or invalid (ffprobe failed): {video_path}")
+            if result.stderr:
+                print(f"   Error: {result.stderr[:500]}")
+            return False
+        
+        return True
+    except Exception as e:
+        print(f"❌ Error validating video file {video_path}: {e}")
         return False
 
 def build_trim_concat_cmd(input_video, keep_intervals, output_video):
@@ -2637,10 +2719,15 @@ def main():
                     )
                     
                     if success:
-                        # Use silence-removed version for transcription and cropping
-                        raw = raw_nosilence
-                        raw_path = raw_nosilence_path
-                        print(f"✅ Removed silence from segment {i}")
+                        # Validate the output file before using it
+                        if validate_video_file(raw_nosilence_path):
+                            # Use silence-removed version for transcription and cropping
+                            raw = raw_nosilence
+                            raw_path = raw_nosilence_path
+                            print(f"✅ Removed silence from segment {i}")
+                        else:
+                            print(f"❌ Silence removal created invalid file for segment {i}, using original")
+                            # Keep using original file
                     else:
                         print(f"⚠️  Silence removal failed for segment {i}, using original")
                 else:
