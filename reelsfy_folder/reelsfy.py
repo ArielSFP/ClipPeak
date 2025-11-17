@@ -1098,7 +1098,7 @@ def generate_short_video_styling(transcript: str, auto_zoom: bool, color_hex: st
                 {"role": "system", "content": system},
                 {"role": "user", "content": user}
             ],
-            reasoning={"effort": "low"},
+            reasoning_effort="low",
         )
         text = resp.choices[0].message.content.strip()
         
@@ -1304,7 +1304,7 @@ def generate_viral(transcript: str) -> dict:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user}
             ],
-            reasoning={"effort": "low"},
+            reasoning_effort="low",
         )
         text = resp.choices[0].message.content.strip()
         
