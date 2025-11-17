@@ -300,6 +300,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     for fname in os.listdir("tmp"):
         # For short videos: only upload output_cropped files (skip output_croppedwithoutcutting)
         # For regular videos: upload all output_cropped files
+        # Note: SRT files are now word-level only (chunking happens in frontend)
         if is_short_video:
             # Short video: only upload the essential files
             if (fname == "output_cropped000.mp4" or 
@@ -310,9 +311,11 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
                 print(f"Uploaded {fname}")
         else:
             # Regular video: upload all output_cropped files
+            # SRT files are word-level (will be chunked in frontend)
             if (fname == "content.txt" or 
                 fname.startswith("output_cropped") and fname.endswith(".mp4") or
-                fname.startswith("output_cropped") and fname.endswith(".srt")):
+                fname.startswith("output_cropped") and fname.endswith(".srt") or
+                fname.startswith("output_nosilence") and fname.endswith(".srt")):
                 local_path = os.path.join("tmp", fname)
                 dest_path = f"{video_output_dir}/{fname}"
                 supabase.storage.from_("processed-videos").upload(dest_path, local_path)

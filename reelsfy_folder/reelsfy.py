@@ -46,7 +46,7 @@ import mediapipe as mp
 
 # --- Config / Keys ---
 # Load from environment variable (Cloud Run secret) with fallback for local dev
-OPENAI_API_KEY = 'JvsYUG4uvvZtzdCmdlyhBjRXLbUYIlw3ww53WR-_ASeC6lnRGgs31M3KSls2X7bPZqo3T3BlbkFJgNhfHRgUmDVo6KhP1_gxWS3Odg5c-z8Dko5bJxXWhaMALE18qj0J-u_Ta5WqJFReHytEqDkOQ' #removed A from last index and sk-proj-Wx_5pt from start
+OPENAI_API_KEY = 'JvsYUG4uvvZtzdCmdlyhBjRXLbUYIlw3ww53WR-_ASeC6lnRGgs31M3KSls2X7bPZqo3T3BlbkFJgNhfHRgUmDVo6KhP1_gxWS3Odg5c-z8Dko5bJxXWhaMALE18qj0J-u_Ta5WqJFReHytEqDkOQ' #sk-proj-Wx_5pt and last A
 
 # Set up OpenAI client
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -467,6 +467,81 @@ def chunk_segments_with_word_timestamps(segment_list, max_words=6):
 
     return entries
 
+def create_word_level_srt(segment_list, srt_path):
+    """
+    Create a word-level SRT file where each word gets its own subtitle entry.
+    This preserves the exact word timestamps from Whisper.
+    
+    Args:
+        segment_list: List of Whisper segments with word timestamps
+        srt_path: Path where the word-level SRT should be saved
+    """
+    entries = []
+    word_token_re = re.compile(r'\w', re.UNICODE)
+
+    for segment in segment_list:
+        words = getattr(segment, "words", None)
+        
+        if not words:
+            # Fallback: if no word timestamps, use segment timing
+            segment_text = (segment.text or "").strip()
+            if segment_text:
+                entries.append({
+                    "start": float(segment.start),
+                    "end": float(segment.end),
+                    "text": segment_text
+                })
+            continue
+
+        # Create one entry per word
+        for word in words:
+            token = word.word
+            if token is None or not token.strip():
+                continue
+            
+            # Only create entries for actual words (skip punctuation-only tokens)
+            if not word_token_re.search(token):
+                continue
+            
+            start = word.start if word.start is not None else segment.start
+            end = word.end if word.end is not None else segment.end
+            
+            if start is None or end is None:
+                start = segment.start
+                end = segment.end
+            
+            if start is not None and end is not None and end > start:
+                entries.append({
+                    "start": float(start),
+                    "end": float(end),
+                    "text": token.strip()
+                })
+
+    # Write word-level SRT file
+    if entries:
+        with open(srt_path, 'w', encoding='utf-8') as f:
+            for i, entry in enumerate(entries, 1):
+                start_time = format_timestamp_srt(entry["start"])
+                end_time = format_timestamp_srt(entry["end"])
+                text = entry["text"]
+                
+                # Apply RTL wrapping if needed
+                if text and dominant_strong_direction(text) == 'rtl':
+                    text = f"\u202b{text}\u202c"
+                
+                f.write(f"{i}\n")
+                f.write(f"{start_time} --> {end_time}\n")
+                f.write(f"{text}\n\n")
+        
+        print(f"✅ Created word-level SRT: {srt_path} ({len(entries)} word entries)")
+    else:
+        # Create empty file if no entries
+        with open(srt_path, 'w', encoding='utf-8') as f:
+            f.write("")
+        print(f"⚠️  No word-level entries found, created empty word-level SRT: {srt_path}")
+    
+    return entries
+
 def normalize_clip_segments(segments, min_length, max_length, video_duration=None):
     """
     Adjust GPT-provided segments so they adhere to min/max duration and stay within video length.
@@ -799,80 +874,20 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
             with open(srt_path, 'w', encoding='utf-8') as f:
                 f.write("")  # Empty file
         else:
-            srt_entries = chunk_segments_with_word_timestamps(segment_list, max_words=6)
-            print(f"✂️  Subtitle entries after 6-word chunking: {len(srt_entries)}")
-
-            if not srt_entries:
-                print("⚠️  WARNING: No subtitle entries after chunking, creating empty SRT")
-                with open(srt_path, 'w', encoding='utf-8') as f:
-                    f.write("")
-            else:
-                preview_count = min(3, len(srt_entries))
-                for preview_idx in range(preview_count):
-                    subtitle = srt_entries[preview_idx]
-                    preview_text = subtitle["text"]
-                    print(
-                        f"   Subtitle {preview_idx+1}: "
-                        f"[{subtitle['start']:.2f}s - {subtitle['end']:.2f}s] '{preview_text[:50]}...'"
-                    )
-
-                max_workers = min(8, os.cpu_count() or 8)
-                use_parallel = max_workers > 1 and len(srt_entries) >= 200
-            written_count = 0
-
-            if use_parallel:
-                total_entries = len(srt_entries)
-                chunk_size = max(64, total_entries // (max_workers * 2) or 1)
-                chunk_payloads = []
-
-                def render_chunk(task):
-                    chunk_index, first_idx, chunk_entries = task
-                    buffer = io.StringIO()
-                    chunk_written = 0
-                    for offset, entry in enumerate(chunk_entries):
-                        idx = first_idx + offset
-                        text = entry["text"]
-                        if not text:
-                            continue
-                        start_time = format_timestamp_srt(entry["start"])
-                        end_time = format_timestamp_srt(entry["end"])
-                        buffer.write(f"{idx}\n")
-                        buffer.write(f"{start_time} --> {end_time}\n")
-                        buffer.write(f"{text}\n\n")
-                        chunk_written += 1
-                    return chunk_index, buffer.getvalue(), chunk_written
-
-                tasks = []
-                for chunk_index, start_idx in enumerate(range(0, total_entries, chunk_size)):
-                    chunk_entries = srt_entries[start_idx:start_idx + chunk_size]
-                    tasks.append((chunk_index, start_idx + 1, chunk_entries))
-
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    results = [executor.submit(render_chunk, task) for task in tasks]
-                    for future in results:
-                        chunk_payloads.append(future.result())
-
-                chunk_payloads.sort(key=lambda x: x[0])
-
-                with open(srt_path, 'w', encoding='utf-8') as f:
-                    for _, chunk_data, chunk_written in chunk_payloads:
-                        if chunk_data:
-                            f.write(chunk_data)
-                        written_count += chunk_written
-            else:
-                with open(srt_path, 'w', encoding='utf-8') as f:
-                    for i, entry in enumerate(srt_entries, start=1):
-                        text = entry["text"]
-                        if not text:
-                            continue
-                        start_time = format_timestamp_srt(entry["start"])
-                        end_time = format_timestamp_srt(entry["end"])
-                        f.write(f"{i}\n")
-                        f.write(f"{start_time} --> {end_time}\n")
-                        f.write(f"{text}\n\n")
-                        written_count += 1
-
-            print(f"   Wrote {written_count} non-empty segments to SRT")
+            # Create word-level SRT file (one word per subtitle entry)
+            # This is the only SRT we generate - chunking happens in the frontend
+            word_entries = create_word_level_srt(segment_list, srt_path)
+            print(f"📝 Created word-level SRT with {len(word_entries)} word entries")
+            
+            # Preview first few entries
+            preview_count = min(3, len(word_entries))
+            for preview_idx in range(preview_count):
+                entry = word_entries[preview_idx]
+                preview_text = entry["text"]
+                print(
+                    f"   Word {preview_idx+1}: "
+                    f"[{entry['start']:.2f}s - {entry['end']:.2f}s] '{preview_text}'"
+                )
         
         # Verify SRT was written
         if os.path.exists(srt_path):
@@ -1083,6 +1098,7 @@ def generate_short_video_styling(transcript: str, auto_zoom: bool, color_hex: st
                 {"role": "system", "content": system},
                 {"role": "user", "content": user}
             ],
+            reasoning={"effort": "low"},
         )
         text = resp.choices[0].message.content.strip()
         
@@ -1288,6 +1304,7 @@ def generate_viral(transcript: str) -> dict:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user}
             ],
+            reasoning={"effort": "low"},
         )
         text = resp.choices[0].message.content.strip()
         
@@ -1355,13 +1372,14 @@ def generate_segments(segments):
         if dur < 25:  end = start + 25
         if dur > 180: end = start + 180
 
-        video_filters = ["scale=1920:1080"]
+        # Prefer GPU scaling; fall back handled by ffmpeg if unavailable
+        video_filters = ["scale_npp=1920:1080"]
         if fps_override:
             video_filters.append(f"fps={format_fps_value(fps_override)}")
         filter_expr = ",".join(video_filters)
 
         cmd = (
-            f"ffmpeg -y -hwaccel cuda -i tmp/input_video.mp4 "
+            f"ffmpeg -y -hwaccel cuda -hwaccel_output_format cuda -i tmp/input_video.mp4 "
             f"-ss {start} -to {end} -vf \"{filter_expr}\" "
             f"-c:v h264_nvenc -preset fast -c:a copy {out}"
         )
@@ -1901,26 +1919,21 @@ def transcribe_clip_with_faster_whisper(input_path: str, detected_language: str 
                 else:
                     raise
         
-        # Transcribe
+        # Transcribe with word timestamps
         segments, info = model.transcribe(
             input_path,
             beam_size=5,
             language=detected_language,  # Use detected language if provided
             vad_filter=True,
-            condition_on_previous_text=True
+            condition_on_previous_text=True,
+            word_timestamps=True
         )
         
-        # Write SRT
-        with open(srt_path, 'w', encoding='utf-8') as f:
-            segment_list = list(segments)
-            for i, segment in enumerate(segment_list, start=1):
-                start_time = format_timestamp_srt(segment.start)
-                end_time = format_timestamp_srt(segment.end)
-                text = segment.text.strip()
-                
-                f.write(f"{i}\n")
-                f.write(f"{start_time} --> {end_time}\n")
-                f.write(f"{text}\n\n")
+        segment_list = list(segments)
+        
+        # Create word-level SRT file (only SRT we generate - chunking happens in frontend)
+        word_entries = create_word_level_srt(segment_list, srt_path)
+        print(f"📝 Created word-level SRT for clip with {len(word_entries)} word entries")
         
         # Clean up
         del model
@@ -1965,11 +1978,9 @@ def generate_subtitle_for_clip(input_path: str, detected_language: str = None) -
     else:
         print(f"SRT already exists for {base}, skipping generation")
 
-    # Now (re)chunk to max 5 words per cue, min 1.0s, with RTL wrapping
-    entries = parse_srt(srt_path)
-    entries = enforce_srt_word_chunks(entries, max_words=5, min_dur=1.0)
-    write_srt_entries(entries, srt_path, rtl_wrap=True)
-    print(f"Rewrote SRT with max 5 words per cue: {srt_path}")
+    # Keep word-level SRT as-is (chunking happens in frontend)
+    # The SRT is already word-level from transcribe_clip_with_faster_whisper
+    print(f"Using word-level SRT (chunking will happen in frontend): {srt_path}")
     return srt_path
 
 # --- Silence removal using ffmpeg silencedetect ---
@@ -2099,7 +2110,7 @@ def remove_silence_with_ffmpeg(input_video: str, output_video: str,
             
             if has_audio:
                 command = [
-                    "ffmpeg", "-y", "-i", input_video,
+                    "ffmpeg", "-y", "-hwaccel", "cuda", "-i", input_video,
                     "-filter_script:v", video_filter_file,
                     "-filter_script:a", audio_filter_file,
                     "-c:v", "h264_nvenc", "-preset", "fast",
@@ -2109,7 +2120,7 @@ def remove_silence_with_ffmpeg(input_video: str, output_video: str,
             else:
                 # Video only (no audio)
                 command = [
-                    "ffmpeg", "-y", "-i", input_video,
+                    "ffmpeg", "-y", "-hwaccel", "cuda", "-i", input_video,
                     "-filter_script:v", video_filter_file,
                     "-c:v", "h264_nvenc", "-preset", "fast",
                     output_video
@@ -2255,7 +2266,7 @@ def build_trim_concat_cmd(input_video, keep_intervals, output_video):
         concat_inputs = "".join(pair_labels)
         filter_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=1[v][a]")
         cmd = [
-            "ffmpeg", "-y", "-i", input_video,
+            "ffmpeg", "-y", "-hwaccel", "cuda", "-i", input_video,
             "-filter_complex", ";".join(filter_parts),
             "-map", "[v]", "-map", "[a]",
             "-c:v", "h264_nvenc", "-preset", "fast",
@@ -2267,7 +2278,7 @@ def build_trim_concat_cmd(input_video, keep_intervals, output_video):
         concat_inputs = "".join(pair_labels)
         filter_parts.append(f"{concat_inputs}concat=n={n}:v=1:a=0[v]")
         cmd = [
-            "ffmpeg", "-y", "-i", input_video,
+            "ffmpeg", "-y", "-hwaccel", "cuda", "-i", input_video,
             "-filter_complex", ";".join(filter_parts),
             "-map", "[v]",
             "-c:v", "h264_nvenc", "-preset", "fast",
