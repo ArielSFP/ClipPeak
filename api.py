@@ -5,6 +5,7 @@ import subprocess
 import json
 import time
 import re
+import threading
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, BackgroundTasks
 from supabase import create_client
@@ -20,22 +21,59 @@ print(f"🔐 Supabase key loaded: {SUPABASE_KEY[:20]}..." if SUPABASE_KEY else "
 
 app = FastAPI()
 
-# Load TalkNet models at startup (once per container, stays in memory)
-@app.on_event("startup")
-async def startup_event():
-    """Initialize models when FastAPI starts - they'll stay loaded for all requests."""
+# Model loading state (thread-safe)
+MODEL_LOADING_LOCK = threading.Lock()
+MODELS_LOADING = False
+MODELS_LOADED = False
+MODEL_LOAD_ERROR = None
+
+def load_models_in_background():
+    """Load TalkNet models in a background thread."""
+    global MODELS_LOADING, MODELS_LOADED, MODEL_LOAD_ERROR
+    
+    with MODEL_LOADING_LOCK:
+        if MODELS_LOADED or MODELS_LOADING:
+            return  # Already loaded or loading
+        MODELS_LOADING = True
+    
     print("\n" + "="*60)
-    print("🚀 FASTAPI STARTUP: Loading TalkNet models...")
+    print("🚀 BACKGROUND: Loading TalkNet models in background thread...")
     print("="*60)
+    
     try:
         initialize_models()
+        with MODEL_LOADING_LOCK:
+            MODELS_LOADED = True
+            MODELS_LOADING = False
+            MODEL_LOAD_ERROR = None
         print("✅ TalkNet models loaded and cached in memory")
         print("   Models will be reused for all subsequent requests")
         print("="*60 + "\n")
     except Exception as e:
-        print(f"⚠️  Warning: Failed to load TalkNet models at startup: {e}")
+        import traceback
+        traceback.print_exc()
+        with MODEL_LOADING_LOCK:
+            MODELS_LOADING = False
+            MODELS_LOADED = False
+            MODEL_LOAD_ERROR = str(e)
+        print(f"❌ Failed to load TalkNet models in background: {e}")
         print("   Models will be loaded on first video request instead")
         print("="*60 + "\n")
+
+# Start loading models in background thread immediately (non-blocking)
+@app.on_event("startup")
+async def startup_event():
+    """Start background model loading - FastAPI starts immediately."""
+    print("\n" + "="*60)
+    print("🚀 FASTAPI STARTUP: Starting background model loading...")
+    print("="*60)
+    print("   API is ready to accept requests while models load")
+    print("="*60 + "\n")
+    
+    # Start model loading in background thread (non-blocking)
+    model_thread = threading.Thread(target=load_models_in_background, daemon=True)
+    model_thread.start()
+    print("📦 Background thread started for TalkNet model loading")
 
 # CORS
 app.add_middleware(
@@ -72,7 +110,13 @@ async def health_check():
         gpu_available = torch.cuda.is_available()
         gpu_count = torch.cuda.device_count() if gpu_available else 0
         gpu_name = torch.cuda.get_device_name(0) if gpu_available else "None"
-        models_loaded = GLOBAL_TALKNET is not None and GLOBAL_TALKNET_DET is not None
+        
+        with MODEL_LOADING_LOCK:
+            models_loaded = MODELS_LOADED and (GLOBAL_TALKNET is not None and GLOBAL_TALKNET_DET is not None)
+            models_loading = MODELS_LOADING
+            model_load_error = MODEL_LOAD_ERROR
+        
+        model_status = "loaded" if models_loaded else ("loading" if models_loading else "not_loaded")
         
         return {
             "status": "healthy",
@@ -80,6 +124,9 @@ async def health_check():
             "gpu_count": gpu_count,
             "gpu_name": gpu_name,
             "models_loaded": models_loaded,
+            "models_loading": models_loading,
+            "model_status": model_status,
+            "model_load_error": model_load_error,
             "supabase_connected": bool(SUPABASE_URL and SUPABASE_KEY),
             "openai_configured": bool(os.environ.get("OPENAI_API_KEY"))
         }
@@ -173,23 +220,76 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     # Start timing
     start_time = time.time()
     
-    # 0) Ensure models are loaded (should already be loaded at startup, but check anyway)
+    # 0) Ensure models are loaded (should already be loaded in background, but check anyway)
     print("\n" + "="*60)
     print("STAGE: Check TalkNet models")
     print("="*60)
-    
-    # Check if models are already loaded (they should be from startup)
+    print("▶️  RUNNING: Check TalkNet models (auto-continue mode)\n")
     from reelsfy_folder.reelsfy import GLOBAL_TALKNET, GLOBAL_TALKNET_DET
-    if GLOBAL_TALKNET is None or GLOBAL_TALKNET_DET is None:
-        print("⚠️  Models not loaded at startup, loading now (14s)...\n")
+    
+    # Check if models are loaded
+    with MODEL_LOADING_LOCK:
+        models_ready = MODELS_LOADED and (GLOBAL_TALKNET is not None and GLOBAL_TALKNET_DET is not None)
+        still_loading = MODELS_LOADING and not MODELS_LOADED
+    
+    if models_ready:
+        print("✅ TalkNet models already loaded (from background thread)\n")
+    elif still_loading:
+        print("⏳ TalkNet models are still loading in background...")
+        print("   Waiting for models to finish loading...")
+        # Wait for models to load (with timeout)
+        max_wait = 300  # 5 minutes max wait
+        wait_interval = 2  # Check every 2 seconds
+        waited = 0
+        while waited < max_wait:
+            time.sleep(wait_interval)
+            waited += wait_interval
+            with MODEL_LOADING_LOCK:
+                if MODELS_LOADED and (GLOBAL_TALKNET is not None and GLOBAL_TALKNET_DET is not None):
+                    print(f"✅ TalkNet models loaded successfully (waited {waited}s for background loading)\n")
+                    break
+                if not MODELS_LOADING and MODEL_LOAD_ERROR:
+                    # Background loading failed, try to load now
+                    print(f"⚠️  Background loading failed: {MODEL_LOAD_ERROR}")
+                    print("   Attempting to load models now...")
+                    try:
+                        initialize_models()
+                        with MODEL_LOADING_LOCK:
+                            MODELS_LOADED = True
+                            MODELS_LOADING = False
+                            MODEL_LOAD_ERROR = None
+                        print("✅ TalkNet models loaded successfully\n")
+                        break
+                    except Exception as e:
+                        print(f"❌ Failed to load TalkNet models: {e}")
+                        print("⚠️  Video processing may fail without TalkNet\n")
+                        break
+        else:
+            # Timeout reached
+            print("⏰ Timeout waiting for models to load, attempting direct load...")
+            try:
+                initialize_models()
+                with MODEL_LOADING_LOCK:
+                    MODELS_LOADED = True
+                    MODELS_LOADING = False
+                    MODEL_LOAD_ERROR = None
+                print("✅ TalkNet models loaded successfully\n")
+            except Exception as e:
+                print(f"❌ Failed to load TalkNet models: {e}")
+                print("⚠️  Video processing may fail without TalkNet\n")
+    else:
+        # Models not loading and not loaded - start loading now
+        print("📦 TalkNet models not loaded, loading now...")
         try:
             initialize_models()
+            with MODEL_LOADING_LOCK:
+                MODELS_LOADED = True
+                MODELS_LOADING = False
+                MODEL_LOAD_ERROR = None
             print("✅ TalkNet models loaded successfully\n")
         except Exception as e:
             print(f"❌ Failed to load TalkNet models: {e}")
             print("⚠️  Video processing may fail without TalkNet\n")
-    else:
-        print("✅ TalkNet models already loaded from startup (0s)\n")
     
     # 1) Find the video's UUID in the videos table
     print("\n" + "="*60)

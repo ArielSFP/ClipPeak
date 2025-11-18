@@ -234,6 +234,56 @@ def extract_zoom_timings_from_srt(srt_path: str):
     
     return zoom_times
 
+def apply_zoom_cues_to_srt(srt_path: str, zoom_cues: list, clip_index: int = 0):
+    """
+    Apply zoom cues to SRT file by adding <zoom> tags to subtitle entries.
+    
+    Args:
+        srt_path: Path to SRT file
+        zoom_cues: List of zoom cue dictionaries with "subtitle_index_range" (e.g., "1,4")
+        clip_index: Zero-based clip identifier (for filtering cues)
+    """
+    if not zoom_cues:
+        return
+    
+    try:
+        entries = parse_srt(srt_path)
+        
+        for zoom_cue in zoom_cues:
+            # Handle both old format (subtitle_index) and new format (subtitle_index_range)
+            if 'subtitle_index_range' in zoom_cue:
+                range_str = zoom_cue['subtitle_index_range']
+                try:
+                    # Parse range like "1,4" -> start=1, end=4
+                    start_idx, end_idx = map(int, range_str.split(','))
+                    # Convert to 0-based indices
+                    start_idx -= 1
+                    end_idx -= 1
+                    
+                    # Apply zoom to all entries in the range
+                    for idx in range(start_idx, end_idx + 1):
+                        if 0 <= idx < len(entries):
+                            # Add <zoom> tag if not already present
+                            if '<zoom>' not in entries[idx]['text']:
+                                entries[idx]['text'] = f"<zoom>{entries[idx]['text']}</zoom>"
+                                print(f"Applied zoom to subtitle {idx+1} (range {zoom_cue['subtitle_index_range']})")
+                except (ValueError, IndexError) as e:
+                    print(f"Warning: Invalid zoom_cue range format '{range_str}': {e}")
+                    continue
+            elif 'subtitle_index' in zoom_cue:
+                # Legacy format: single subtitle index
+                idx = zoom_cue['subtitle_index'] - 1  # Convert to 0-based
+                if 0 <= idx < len(entries):
+                    if '<zoom>' not in entries[idx]['text']:
+                        entries[idx]['text'] = f"<zoom>{entries[idx]['text']}</zoom>"
+                        print(f"Applied zoom to subtitle {zoom_cue['subtitle_index']} (legacy format)")
+        
+        # Write back the updated SRT
+        write_srt_entries(entries, srt_path, rtl_wrap=True)
+        print(f"Applied zoom cues to {srt_path}")
+    except Exception as e:
+        print(f"Warning: Could not apply zoom cues to {srt_path}: {e}")
+
 def apply_srt_overrides(srt_path: str, srt_overrides: dict, clip_index: int = 0):
     """
     Apply SRT overrides (with <zoom> tags) to specific subtitle entries for a given clip.
@@ -1052,15 +1102,22 @@ def generate_short_video_styling(transcript: str, auto_zoom: bool, color_hex: st
         "בהתבסס על התמליל הבא, בצע את המשימות הבאות:\n\n"
         "1. **צור כותרת ויראלית** - קצרה, מושכת, עם 2-3 תגיות רלוונטיות (#תגית)\n"
         "2. **צור תיאור קצר** - עד 20 מילים, מעניין, עם תגיות רלוונטיות\n"
-        "3. **זהה מילים חשובות** - לכל כתובית, סמן מילים חשובות עם תגיות הדגשה:\n"
-        f"   - תג צבע: <color:{color_hex}>מילה חשובה</color>\n"
+        "3. **זהה מילים חשובות** - הכתוביות הן ברמת מילה (word-level), כל כתובית היא מילה אחת!\n"
+        f"   - תג צבע: <color:{color_hex}>מילה</color> - סמן מילים בודדות בלבד, לא משפטים!\n"
     )
     
     if auto_zoom:
         user += "   - תג זום: <zoom>מילה</zoom> - לזום מהיר על מילים קריטיות\n"
     
     user += (
-        "\nהחזר JSON תקין בלבד:\n"
+        "\n**חשוב: מספר מילים צבעוניות לפי אורך הסרטון:**\n"
+        "- 10-20 שניות: 4 מילים צבעוניות\n"
+        "- 21-40 שניות: 6 מילים צבעוניות\n"
+        "- 41-60 שניות: 8 מילים צבעוניות\n"
+        "- 60-90 שניות: 10 מילים צבעוניות\n"
+        "- 90-120 שניות: 12 מילים צבעוניות\n\n"
+        "**חובה להפיץ את המילים הצבעוניות לאורך כל הסרטון, לא רק בתחילתו!**\n\n"
+        "החזר JSON תקין בלבד:\n"
         "{\n"
         '  "title": "כותרת מעניינת לסרטון #תגית1 #תגית2",\n'
         '  "description": "תיאור קצר ומעניין של הסרטון בעד 20 מילים #תגית",\n'
@@ -1068,11 +1125,11 @@ def generate_short_video_styling(transcript: str, auto_zoom: bool, color_hex: st
         '    "0:1": "'
     )
     
-    # Show example with both zoom and color if both enabled
+    # Show example with colored word only (word-level, not building sentences)
     if auto_zoom:
-        user += f'<color:{color_hex}>מילה</color> חשובה <zoom>מאוד</zoom>'
+        user += f'<color:{color_hex}><zoom>מילה</zoom></color>'
     else:
-        user += f'<color:{color_hex}>מילה</color> חשובה'
+        user += f'<color:{color_hex}>מילה</color>'
     
     user += f'",\n'
     user += '    "0:2": "..."\n'
@@ -1080,13 +1137,12 @@ def generate_short_video_styling(transcript: str, auto_zoom: bool, color_hex: st
     user += '}\n\n'
     user += (
         "**דרישות:**\n"
-        "1) הדגש 2-3 מילים חשובות בכל כתובית\n"
-        "2) שמור על הטקסט המלא של הכתובית, רק הוסף תגיות\n"
-        "3) אל תשנה את המבנה או סדר המילים\n"
-        "4) כותרת: קצרה ויראלית עם תגיות (#)\n"
-        "5) תיאור: עד 20 מילים, מעניין, עם תגיות\n"
-        "6) החזר JSON תקין בלבד, ללא הסברים\n"
-        "7) הערכים בתוך srt_overrides חייבים להשתמש במפתח \"<מספר קליפ>:<מספר כתובית>\" (בסרטון קצר תמיד מספר הקליפ הוא 0)\n\n"
+        "1) **חשוב: הכתוביות הן ברמת מילה!** אל תבנה משפטים מהמילים. פשוט סמן מילים בודדות עם תגית צבע.\n"
+        "2) כל מפתח ב-srt_overrides הוא \"0:<מספר כתובית>\" והערך הוא המילה עם תגית הצבע בלבד (לא משפט שלם!)\n"
+        "3) כותרת: קצרה ויראלית עם תגיות (#)\n"
+        "4) תיאור: עד 20 מילים, מעניין, עם תגיות\n"
+        "5) החזר JSON תקין בלבד, ללא הסברים\n"
+        "6) הערכים בתוך srt_overrides חייבים להשתמש במפתח \"0:<מספר כתובית>\" (בסרטון קצר תמיד מספר הקליפ הוא 0)\n\n"
         f"תמליל:\n{transcript}\n"
     )
     
@@ -1143,11 +1199,11 @@ def generate_viral(transcript: str) -> dict:
         {
           "start_time": 12.3, "end_time": 82.5, "duration": 70.2,
           "title": "#כותרת #תגיות", "description": "תיאור עד 20 מילים #תגיות",
-          "zoom_cues": [ { "subtitle_index": 17 }, ... ]   # 1-based indices
+          "zoom_cues": [ { "subtitle_index_range": "1,4" }, ... ]   # Range format: "start,end" (1-based)
         }, ...
       ],
       "srt_overrides": { 
-        "17": "<color:#FF3B3B><zoom>מילה</zoom> חשובה</color>"
+        "0:17": "<color:#FF3B3B>מילה</color>"  # Word-level: each entry is a single word with color tag
       }
     }
     """
@@ -1221,20 +1277,16 @@ def generate_viral(transcript: str) -> dict:
     )
     
     if auto_zoom:
-        user += ',\n      "zoom_cues": [ { "subtitle_index": 1 } ]'
+        user += ',\n      "zoom_cues": [ { "subtitle_index_range": "1,4" } ]'
     
     user += '\n    }\n  ],\n  "srt_overrides": {\n'
     user += '    "<מספר קליפ>:<מספר כתובית>": "'
     
-    # Show example with both zoom and color if both enabled
-    if auto_zoom and auto_colored:
-        user += f'<color:{color_hex}><zoom>טקסט</zoom> הכתובית</color>'
-    elif auto_colored:
-        user += f'<color:{color_hex}>טקסט הכתובית</color>'
-    elif auto_zoom:
-        user += '<zoom>טקסט הכתובית</zoom>'
+    # Show example with colored words only (word-level, not building sentences)
+    if auto_colored:
+        user += f'<color:{color_hex}>מילה</color>'
     else:
-        user += 'טקסט הכתובית'
+        user += 'מילה'
     
     user += '"\n  }\n}\n\n'
     
@@ -1257,21 +1309,37 @@ def generate_viral(transcript: str) -> dict:
         "10) הערכים במילון srt_overrides חייבים להשתמש במפתח \"<מספר קליפ>:<מספר כתובית>\" (מספר קליפ הוא האינדקס ברשימת הקטעים, החל מ-0).\n"
     )
     
+    # Calculate number of colored words and zoom cues based on clip duration
+    # This will be added per segment based on its duration
+    user += (
+        "\n**חשוב: מספר מילים צבעוניות וזום לפי אורך הקטע:**\n"
+        "- 10-20 שניות: 4 מילים צבעוניות, 3 זום\n"
+        "- 21-40 שניות: 6 מילים צבעוניות, 4 זום\n"
+        "- 41-60 שניות: 8 מילים צבעוניות, 6 זום\n"
+        "- 60-90 שניות: 10 מילים צבעוניות, 7 זום\n"
+        "- 90-120 שניות: 12 מילים צבעוניות, 9 זום\n\n"
+        "**חובה להפיץ את המילים הצבעוניות והזום לאורך כל הקטע, לא רק בתחילתו!**\n"
+        "צבע מילים חשובות וזום סביב חלקים חשובים לאורך כל הקטע.\n\n"
+    )
+    
     # Add zoom requirement if enabled
     requirement_num = 11
     if auto_zoom:
         user += (
-            f"{requirement_num}) בחר *כתוביות (לפי מספר)* שבהן כדאי לבצע *זום מהיר קטן*, "
-            "וסמן במדויק את המילים החשובות באמצעות <zoom>…</zoom>.\n"
+            f"{requirement_num}) בחר *טווחי כתוביות* (לפי מספר) שבהן כדאי לבצע *זום*. "
+            "השתמש ב-subtitle_index_range בפורמט \"start,end\" (למשל \"1,4\" משמע זום מתחילת כתובית 1 עד סוף כתובית 4). "
+            "הזום צריך להתחיל בתחילת הכתובית הראשונה ולהסתיים בסוף הכתובית האחרונה בטווח.\n"
         )
         requirement_num += 1
     
     # Add colored words requirement if enabled
     if auto_colored:
         user += (
-            f"{requirement_num}) לכל כתובית, זהה *2-3 מילים חשובות* והדגש אותן עם תגית צבע: "
-            f"<color:{color_hex}>מילה חשובה</color>. "
-            "כלול את המילים הצבעוניות בתוך srt_overrides.\n"
+            f"{requirement_num}) **חשוב: הכתוביות הן ברמת מילה (word-level), כל כתובית היא מילה אחת!** "
+            "אל תבנה משפטים מהמילים. פשוט סמן מילים בודדות עם תגית צבע: "
+            f"<color:{color_hex}>מילה</color>. "
+            "כלול את המילים הצבעוניות בתוך srt_overrides, כאשר כל מפתח הוא \"<מספר קליפ>:<מספר כתובית>\" "
+            "והערך הוא המילה עם תגית הצבע בלבד (לא משפט שלם!).\n"
         )
         requirement_num += 1
     
@@ -1385,7 +1453,7 @@ def generate_segments(segments):
         cmd = (
             f"ffmpeg -y -hwaccel cuda -i tmp/input_video.mp4 "
             f"-ss {start} -to {end} -vf \"{filter_expr}\" "
-            f"-c:v h264_nvenc -preset fast -c:a copy {out}"
+            f"-c:v h264_nvenc -preset p4 -b:v 3M -c:a copy {out}"
         )
         subprocess.call(cmd, shell=True)
 
@@ -1443,6 +1511,8 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
     MARGIN = 0.28          # padding around face crop
     SMOOTHING = min(0.95, ease + 0.1)  # Smoothing for stability
     MIN_BOX = 0.30         # min relative width when face tiny
+    DEADZONE_PCT = 0.20    # 20% central deadzone (face can move within this without tracking)
+    SMOOTH_FOLLOW_RATE = 0.08  # Smooth following rate when face is outside deadzone (lower = smoother, 0.08 = very smooth)
     
     print("🎤 TalkNet Active Speaker Detection")
     print("="*60)
@@ -1584,7 +1654,8 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
         '-r', str(fps),
         '-i', '-',  # Read from stdin
         '-c:v', 'h264_nvenc',
-        '-preset', 'fast',
+        '-preset', 'p4',
+        '-b:v', '3M',
         '-pix_fmt', 'yuv420p',
         tmp_video_only
     ]
@@ -1623,25 +1694,38 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
         
         # Apply smoothing with deadzone
         if speaker_changed:
+            # Instant jump on speaker change (no smoothing)
             smooth_bbox = target_box
         else:
+            # Same speaker - use smooth following with deadzone
             if smooth_bbox is not None:
-                cx, cy, cw, ch = fit_aspect_with_margin(*target_box, W, H, DESIRED_ASPECT, MARGIN)
+                # Calculate current crop area based on smooth_bbox (where we're currently looking)
+                cx, cy, cw, ch = fit_aspect_with_margin(*smooth_bbox, W, H, DESIRED_ASPECT, MARGIN)
+                
+                # Calculate face center position in original frame coordinates
                 face_cx = target_box[0] + target_box[2] // 2
                 face_cy = target_box[1] + target_box[3] // 2
                 
-                # Deadzone (30% width, 50% height of crop area)
-                deadzone_w = cw * 0.30
+                # Deadzone (20% width, 50% height of crop area) - centered in current crop
+                deadzone_w = cw * DEADZONE_PCT
                 deadzone_h = ch * 0.50
                 deadzone_x = cx + (cw - deadzone_w) // 2
                 deadzone_y = cy + (ch - deadzone_h) // 2
                 
-                if (deadzone_x <= face_cx <= deadzone_x + deadzone_w and
-                    deadzone_y <= face_cy <= deadzone_y + deadzone_h):
-                    pass  # Face in deadzone, don't update
+                # Check if face center is within the deadzone
+                face_in_deadzone = (deadzone_x <= face_cx <= deadzone_x + deadzone_w and
+                                   deadzone_y <= face_cy <= deadzone_y + deadzone_h)
+                
+                if face_in_deadzone:
+                    # Face is in deadzone - keep current smooth_bbox position (no movement needed)
+                    pass
                 else:
-                    smooth_bbox = ema_bbox(smooth_bbox, target_box, SMOOTHING)
+                    # Face is outside deadzone - smoothly follow it
+                    # Use very smooth interpolation (SMOOTH_FOLLOW_RATE = 0.08 means 8% movement per frame)
+                    # This creates a gradual, smooth following motion
+                    smooth_bbox = ema_bbox(smooth_bbox, target_box, 1.0 - SMOOTH_FOLLOW_RATE)
             else:
+                # First frame - initialize with target position
                 smooth_bbox = target_box
         
         cx, cy, cw, ch = fit_aspect_with_margin(*smooth_bbox, W, H, DESIRED_ASPECT, MARGIN)
@@ -1696,7 +1780,8 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
             out_path,
             vcodec='h264_nvenc',
             acodec='copy',
-            preset='fast'
+            preset='p4',
+            **{'b:v': '3M'}
         )
         .overwrite_output()
         .run(quiet=False)
@@ -1773,7 +1858,8 @@ def apply_zoom_effects_only(input_file: str, output_file: str, srt_path: str = N
         '-r', str(fps),
         '-i', '-',  # Read from stdin
         '-c:v', 'h264_nvenc',
-        '-preset', 'fast',
+        '-preset', 'p4',
+        '-b:v', '3M',
         '-pix_fmt', 'yuv420p',
         tmp_video_only
     ]
@@ -1840,7 +1926,8 @@ def apply_zoom_effects_only(input_file: str, output_file: str, srt_path: str = N
             out_path,
             vcodec='h264_nvenc',
             acodec='copy',
-            preset='fast'
+            preset='p4',
+            **{'b:v': '3M'}
         )
         .overwrite_output()
         .run(quiet=False)
@@ -2130,7 +2217,7 @@ def remove_silence_with_ffmpeg(input_video: str, output_video: str,
                     "ffmpeg", "-y", "-hwaccel", "cuda", "-i", input_video,
                     "-filter_script:v", video_filter_file,
                     "-filter_script:a", audio_filter_file,
-                    "-c:v", "h264_nvenc", "-preset", "fast",
+                    "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "3M",
                     "-c:a", "aac",
                     output_video
                 ]
@@ -2139,7 +2226,7 @@ def remove_silence_with_ffmpeg(input_video: str, output_video: str,
                 command = [
                     "ffmpeg", "-y", "-hwaccel", "cuda", "-i", input_video,
                     "-filter_script:v", video_filter_file,
-                    "-c:v", "h264_nvenc", "-preset", "fast",
+                    "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "3M",
                     output_video
                 ]
             
@@ -2351,7 +2438,7 @@ def build_trim_concat_cmd(input_video, keep_intervals, output_video):
             "ffmpeg", "-y", "-hwaccel", "cuda", "-i", input_video,
             "-filter_complex", ";".join(filter_parts),
             "-map", "[v]", "-map", "[a]",
-            "-c:v", "h264_nvenc", "-preset", "fast",
+            "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "3M",
             "-c:a", "aac",
             output_video
         ]
@@ -2363,7 +2450,7 @@ def build_trim_concat_cmd(input_video, keep_intervals, output_video):
             "ffmpeg", "-y", "-hwaccel", "cuda", "-i", input_video,
             "-filter_complex", ";".join(filter_parts),
             "-map", "[v]",
-            "-c:v", "h264_nvenc", "-preset", "fast",
+            "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "3M",
             output_video
         ]
 
@@ -2427,7 +2514,8 @@ def burn_subtitles(input_video: str, srt_path: str, output_video: str):
         "Outline=1,Shadow=1,BorderStyle=1"
     )
     esc = srt_path.replace('\\','\\\\').replace(':','\\:')
-    inp = ffmpeg.input(input_video)
+    # Use GPU hardware acceleration for input decoding
+    inp = ffmpeg.input(input_video, hwaccel='cuda')
     # Use the fonts directory in tmp folder
     import os
     fonts_dir = os.path.abspath(os.path.join("tmp", "fonts"))  # Absolute path to tmp/fonts directory
@@ -2451,7 +2539,7 @@ def burn_subtitles(input_video: str, srt_path: str, output_video: str):
     video = inp.video.filter_('subtitles', esc, force_style=style, fontsdir=fonts_dir)
     audio = inp.audio
     (
-        ffmpeg.output(video, audio, output_video, vcodec='h264_nvenc', acodec='copy', preset='fast')
+        ffmpeg.output(video, audio, output_video, vcodec='h264_nvenc', acodec='copy', preset='p4', **{'b:v': '3M'})
         .run(overwrite_output=True)
     )
 
@@ -2741,9 +2829,15 @@ def main():
                 # Pass detected language from main transcription to clip transcription
                 raw_srt = generate_subtitle_for_clip(raw_path, detected_language)
                 
-                # Apply SRT overrides from GPT (includes <zoom> tags and corrections)
+                # Apply SRT overrides from GPT (colored words)
                 if viral_data and 'srt_overrides' in viral_data:
                     apply_srt_overrides(raw_srt, viral_data['srt_overrides'], clip_index=i)
+                
+                # Apply zoom cues from GPT (subtitle_index_range format)
+                if viral_data and 'segments' and i < len(viral_data['segments']):
+                    segment = viral_data['segments'][i]
+                    if 'zoom_cues' in segment:
+                        apply_zoom_cues_to_srt(raw_srt, segment['zoom_cues'], clip_index=i)
                 
                 print(f"✅ Generated subtitles for segment {i}")
 
@@ -3309,7 +3403,7 @@ def burn_subtitles_with_styling(input_video: str, srt_path: str, output_video: s
     
     # Output with NVENC
     (
-        ffmpeg.output(video, audio, output_video, vcodec='h264_nvenc', acodec='aac', preset='fast')
+        ffmpeg.output(video, audio, output_video, vcodec='h264_nvenc', acodec='aac', preset='p4', **{'b:v': '3M'})
         .run(overwrite_output=True)
     )
     
