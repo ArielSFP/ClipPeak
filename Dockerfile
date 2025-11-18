@@ -55,6 +55,8 @@ RUN cd /tmp && \
     rm -rf /tmp/nv-codec-headers
 
 # Compile FFmpeg from source with NVENC support
+# Note: --enable-libnpp is optional (used for GPU-accelerated filters like scale_npp)
+# NVENC encoding works without it, so we omit it to avoid build issues
 RUN cd /tmp && \
     git clone --depth 1 https://git.ffmpeg.org/ffmpeg.git ffmpeg-src && \
     cd ffmpeg-src && \
@@ -74,7 +76,6 @@ RUN cd /tmp && \
         --enable-cuda \
         --enable-cuvid \
         --enable-nvenc \
-        --enable-libnpp \
         --extra-cflags="-I/usr/local/cuda/include -I/usr/local/cuda/include/nv-codec-headers" \
         --extra-ldflags="-L/usr/local/cuda/lib64" \
         --prefix=/usr/local \
