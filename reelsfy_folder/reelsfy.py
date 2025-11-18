@@ -85,7 +85,72 @@ def report_progress(progress: int, stage: str, eta_seconds: int = None):
     if PROGRESS_CALLBACK and VIDEO_ID:
         PROGRESS_CALLBACK(VIDEO_ID, progress, stage, eta_seconds)
     else:
-        print(f"Progress: {progress}% - {stage}")
+        if eta_seconds:
+            eta_str = f" (ETA: {eta_seconds}s)"
+        else:
+            eta_str = ""
+        print(f"Progress: {progress}% - {stage}{eta_str}")
+
+def run_ffmpeg_with_nvenc_fallback(command_list, description="FFmpeg encoding"):
+    """
+    Run FFmpeg command with NVENC, falling back to CPU encoding (libx264) if NVENC fails.
+    
+    Args:
+        command_list: List of command arguments for subprocess.run
+        description: Description for logging
+    
+    Returns:
+        subprocess.CompletedProcess result
+    """
+    # Try NVENC first
+    result = subprocess.run(command_list, capture_output=True, text=True)
+    
+    # Check if NVENC failed due to driver version or other NVENC-specific issues
+    if result.returncode != 0:
+        nvenc_error_indicators = [
+            "nvenc",
+            "Driver does not support",
+            "minimum required Nvidia driver",
+            "Could not open encoder"
+        ]
+        
+        stderr_lower = result.stderr.lower()
+        if any(indicator.lower() in stderr_lower for indicator in nvenc_error_indicators):
+            print(f"⚠️  NVENC encoding failed, falling back to CPU encoding (libx264)...")
+            print(f"   Error: {result.stderr[:200]}")
+            
+            # Replace NVENC with libx264
+            fallback_command = []
+            skip_next = False
+            for i, arg in enumerate(command_list):
+                if skip_next:
+                    skip_next = False
+                    continue
+                    
+                if arg == "h264_nvenc":
+                    fallback_command.append("libx264")
+                elif arg == "-hwaccel" and i + 1 < len(command_list) and command_list[i + 1] == "cuda":
+                    # Skip -hwaccel and cuda for CPU encoding
+                    skip_next = True
+                    continue
+                elif arg == "-preset" and i + 1 < len(command_list) and command_list[i + 1] == "p4":
+                    # Change preset to medium for libx264
+                    fallback_command.append("-preset")
+                    fallback_command.append("medium")
+                    skip_next = True
+                    continue
+                else:
+                    fallback_command.append(arg)
+            
+            # Try CPU encoding
+            result = subprocess.run(fallback_command, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                print(f"✅ CPU encoding (libx264) succeeded")
+            else:
+                print(f"❌ CPU encoding also failed: {result.stderr[:200]}")
+    
+    return result
 
 def initialize_models():
     """Initialize TalkNet model at startup for better performance."""
@@ -299,7 +364,7 @@ def apply_srt_overrides(srt_path: str, srt_overrides: dict, clip_index: int = 0)
     
     try:
         entries = parse_srt(srt_path)
-
+        
         def parse_key(key: str):
             if ':' in key:
                 clip_str, sub_str = key.split(':', 1)
@@ -788,8 +853,8 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
         print(f"🖥️  Initial device: {device.upper()}")
         if device == "cuda":
             try:
-                gpu_name = torch.cuda.get_device_name(0)
-                print(f"🎮 GPU: {gpu_name}")
+            gpu_name = torch.cuda.get_device_name(0)
+            print(f"🎮 GPU: {gpu_name}")
                 
                 # Test CUDA with a small operation to verify cuDNN works
                 test_tensor = torch.zeros(1).cuda()
@@ -812,7 +877,7 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
         print(f"🔍 LANGUAGE DETECTION: Device={device}, Compute={compute_type}")
         
         try:
-            detection_model = WhisperModel("tiny", device=device, compute_type=compute_type)
+        detection_model = WhisperModel("tiny", device=device, compute_type=compute_type)
         except Exception as model_error:
             if device == "cuda":
                 print(f"⚠️  Failed to load model on CUDA: {model_error}")
@@ -878,13 +943,13 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
                         print(f"🔄 Retrying with CPU...")
                         device = "cpu"
                         compute_type = "int8"
-                        model = WhisperModel("large-v3", device=device, compute_type=compute_type)
+                model = WhisperModel("large-v3", device=device, compute_type=compute_type)
                     else:
                         raise
         else:
             print(f"🌐 Using Whisper Turbo for {detected_language}")
             try:
-                model = WhisperModel("turbo", device=device, compute_type=compute_type)
+            model = WhisperModel("turbo", device=device, compute_type=compute_type)
             except Exception as cuda_error:
                 if device == "cuda":
                     print(f"⚠️  Failed to load turbo on CUDA: {cuda_error}")
@@ -913,9 +978,35 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
         
         print(f"   Transcription generator created, processing segments...")
         
-        # Convert segments to SRT format
-        print("📝 Writing SRT file...")
-        segment_list = list(segments)
+        # Track progress with ETA
+        import time
+        total_duration = info.duration if hasattr(info, 'duration') else None
+        processed_duration = 0.0
+        start_time = time.time()
+        segment_list = []
+        
+        print("📝 Processing transcription segments with progress tracking...")
+        for segment in segments:
+            segment_list.append(segment)
+            
+            # Update progress tracking
+            if total_duration and segment.end:
+                segment_duration = segment.end - segment.start if segment.start else 0
+                processed_duration += segment_duration
+                
+                # Calculate progress percentage and ETA
+                progress_pct = min(100, int((processed_duration / total_duration) * 100))
+                elapsed_time = time.time() - start_time
+                
+                if processed_duration > 0 and elapsed_time > 0:
+                    # Estimate total time based on current rate
+                    estimated_total_time = elapsed_time * (total_duration / processed_duration)
+                    eta_seconds = max(0, int(estimated_total_time - elapsed_time))
+                    
+                    # Report progress every 5% or every 10 seconds
+                    if progress_pct % 5 == 0 or elapsed_time % 10 < 1:
+                        report_progress(progress_pct, f"מעתיק... ({progress_pct}%)", eta_seconds)
+        
         print(f"📊 Total segments returned: {len(segment_list)}")
         
         if len(segment_list) == 0:
@@ -942,8 +1033,8 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
         # Verify SRT was written
         if os.path.exists(srt_path):
             file_size = os.path.getsize(srt_path)
-            print(f"✅ Transcription complete: {srt_path}")
-            print(f"📊 Total segments: {len(segment_list)}")
+        print(f"✅ Transcription complete: {srt_path}")
+        print(f"📊 Total segments: {len(segment_list)}")
             print(f"📁 SRT file size: {file_size} bytes")
             if file_size == 0:
                 print(f"⚠️  WARNING: SRT file is empty (0 bytes)!")
@@ -1449,13 +1540,16 @@ def generate_segments(segments):
 
         # Note: When using CUDA hardware acceleration, we decode to CUDA memory
         # but scale filter works on CPU frames, so we don't use -hwaccel_output_format cuda here
-        # The h264_nvenc encoder will handle GPU encoding efficiently
-        cmd = (
-            f"ffmpeg -y -hwaccel cuda -i tmp/input_video.mp4 "
-            f"-ss {start} -to {end} -vf \"{filter_expr}\" "
-            f"-c:v h264_nvenc -preset p4 -b:v 3M -c:a copy {out}"
-        )
-        subprocess.call(cmd, shell=True)
+        # The h264_nvenc encoder will handle GPU encoding efficiently (with CPU fallback)
+        cmd_list = [
+            "ffmpeg", "-y", "-hwaccel", "cuda", "-i", "tmp/input_video.mp4",
+            "-ss", str(start), "-to", str(end), "-vf", filter_expr,
+            "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "3M", "-c:a", "copy", out
+        ]
+        result = run_ffmpeg_with_nvenc_fallback(cmd_list, f"Extracting segment {i+1}/{len(segments)}")
+        if result.returncode != 0:
+            print(f"❌ Failed to extract segment {i+1}: {result.stderr[:200]}")
+            raise RuntimeError(f"FFmpeg segment extraction failed for segment {i+1}")
 
 def generate_short(input_file: str, output_file: str, srt_path: str = None, detect_every=1, ease=0.2, zoom_cues=None):
     """
@@ -1545,16 +1639,16 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
     
     try:
         # Run TalkNet on the video (no debug visualization)
-        talknet_results = talknet_main(
-            GLOBAL_TALKNET,
-            GLOBAL_TALKNET_DET,
-            in_path,
-            start_seconds=0,
-            end_seconds=-1,
-            return_visualization=False,
-            face_boxes="",
-            in_memory_threshold=5000
-        )
+            talknet_results = talknet_main(
+                GLOBAL_TALKNET,
+                GLOBAL_TALKNET_DET,
+                in_path,
+                start_seconds=0,
+                end_seconds=-1,
+                return_visualization=False,
+                face_boxes="",
+                in_memory_threshold=5000
+            )
         print(f"✅ TalkNet detected {len(talknet_results)} frames with face data")
     except Exception as e:
         import traceback
@@ -2001,13 +2095,13 @@ def transcribe_clip_with_faster_whisper(input_path: str, detected_language: str 
                         print(f"🔄 Retrying with CPU...")
                         device = "cpu"
                         compute_type = "int8"
-                        model = WhisperModel("turbo", device=device, compute_type=compute_type)
+                model = WhisperModel("turbo", device=device, compute_type=compute_type)
                     else:
                         raise
         else:
             # Use turbo model for clips (fast and accurate enough for short segments)
             try:
-                model = WhisperModel("turbo", device=device, compute_type=compute_type)
+            model = WhisperModel("turbo", device=device, compute_type=compute_type)
             except Exception as cuda_error:
                 if device == "cuda":
                     print(f"⚠️  Failed to load turbo on CUDA: {cuda_error}")
@@ -2028,7 +2122,34 @@ def transcribe_clip_with_faster_whisper(input_path: str, detected_language: str 
             word_timestamps=True
         )
         
-        segment_list = list(segments)
+        # Track progress with ETA
+        import time
+        total_duration = info.duration if hasattr(info, 'duration') else None
+        processed_duration = 0.0
+        start_time = time.time()
+        segment_list = []
+        
+        print("📝 Processing transcription segments with progress tracking...")
+        for segment in segments:
+            segment_list.append(segment)
+            
+            # Update progress tracking
+            if total_duration and segment.end:
+                segment_duration = segment.end - segment.start if segment.start else 0
+                processed_duration += segment_duration
+                
+                # Calculate progress percentage and ETA
+                progress_pct = min(100, int((processed_duration / total_duration) * 100))
+                elapsed_time = time.time() - start_time
+                
+                if processed_duration > 0 and elapsed_time > 0:
+                    # Estimate total time based on current rate
+                    estimated_total_time = elapsed_time * (total_duration / processed_duration)
+                    eta_seconds = max(0, int(estimated_total_time - elapsed_time))
+                    
+                    # Report progress every 10% or every 5 seconds
+                    if progress_pct % 10 == 0 or elapsed_time % 5 < 1:
+                        report_progress(progress_pct, f"מעתיק קליפ... ({progress_pct}%)", eta_seconds)
         
         # Create word-level SRT file (only SRT we generate - chunking happens in frontend)
         word_entries = create_word_level_srt(segment_list, srt_path)
@@ -2177,7 +2298,7 @@ def remove_silence_with_ffmpeg(input_video: str, output_video: str,
             shutil.copy2(input_video, output_video)
             # Validate the copied file
             if validate_video_file(output_video):
-                return True
+            return True
             else:
                 print(f"❌ Copied video file is invalid: {output_video}")
                 return False
@@ -2230,7 +2351,7 @@ def remove_silence_with_ffmpeg(input_video: str, output_video: str,
                     output_video
                 ]
             
-            result = subprocess.run(command, check=False, capture_output=True, text=True)
+            result = run_ffmpeg_with_nvenc_fallback(command, "Removing silence")
             
             if result.returncode != 0:
                 print(f"❌ FFmpeg failed with return code {result.returncode}")
@@ -2246,8 +2367,8 @@ def remove_silence_with_ffmpeg(input_video: str, output_video: str,
                 print(f"❌ Output video file is corrupted or invalid: {output_video}")
                 return False
             
-            print(f"✅ Successfully removed silence: {output_video}")
-            return True
+                print(f"✅ Successfully removed silence: {output_video}")
+                return True
         finally:
             # Cleanup temp files
             try:
@@ -2576,15 +2697,15 @@ def main():
     # download or copy (skip in export mode)
     if not args.export_mode:
         log_stage("Download or copy input video")
-        src = 'input_video.mp4'
-        if args.video_id:
-            YouTube(f"https://youtu.be/{args.video_id}")\
-                .streams.filter(file_extension='mp4')\
-                .get_highest_resolution()\
-                .download(output_path='tmp', filename=src)
-        else:
-            shutil.copy2(args.file, os.path.join('tmp', src))
-        print(f"Input video ready: {src}")
+            src = 'input_video.mp4'
+            if args.video_id:
+                YouTube(f"https://youtu.be/{args.video_id}")\
+                    .streams.filter(file_extension='mp4')\
+                    .get_highest_resolution()\
+                    .download(output_path='tmp', filename=src)
+            else:
+                shutil.copy2(args.file, os.path.join('tmp', src))
+            print(f"Input video ready: {src}")
 
         # For SHORT VIDEO MODE: Remove silence BEFORE transcription
         if IS_SHORT_VIDEO:
@@ -2635,9 +2756,9 @@ def main():
 
         # transcript (for GPT prompt context) and detected language
         log_stage("Generate transcript using auto_subtitle")
-        report_progress(15, "מתמלל סרטון...")
-        transcript, detected_language = generate_transcript(src)
-        print(f"Transcript generated (Language: {detected_language})")
+            report_progress(15, "מתמלל סרטון...")
+            transcript, detected_language = generate_transcript(src)
+            print(f"Transcript generated (Language: {detected_language})")
     
     else:
         # In export mode, we're working with already downloaded files
@@ -2650,33 +2771,33 @@ def main():
         if IS_SHORT_VIDEO:
             # Short video mode: just get styling (colored words and zoom cues)
             log_stage("Generate short video styling (colored words + zoom)")
-            report_progress(35, "מזהה מילים חשובות...")
-            print("Short video mode - generating styling, title and description")
-            auto_zoom = PROCESSING_SETTINGS.get('autoZoomIns', True)
-            color_hex = PROCESSING_SETTINGS.get('coloredWordsColor', '#FF3B3B')
-            styling_data = generate_short_video_styling(transcript, auto_zoom, color_hex)
-            viral_data = {
-                "segments": [],
-                "srt_overrides": styling_data.get("srt_overrides", {}),
-                "title": styling_data.get("title", "סרטון קצר"),
-                "description": styling_data.get("description", "")
-            }
-            # Save for potential reprocessing
-            with open(content_path, 'w', encoding='utf-8') as f:
-                json.dump(viral_data, f, ensure_ascii=False, indent=2)
-            print(f"Generated title: {viral_data['title']}")
-            print(f"Generated description: {viral_data['description']}")
+                report_progress(35, "מזהה מילים חשובות...")
+                print("Short video mode - generating styling, title and description")
+                auto_zoom = PROCESSING_SETTINGS.get('autoZoomIns', True)
+                color_hex = PROCESSING_SETTINGS.get('coloredWordsColor', '#FF3B3B')
+                styling_data = generate_short_video_styling(transcript, auto_zoom, color_hex)
+                viral_data = {
+                    "segments": [],
+                    "srt_overrides": styling_data.get("srt_overrides", {}),
+                    "title": styling_data.get("title", "סרטון קצר"),
+                    "description": styling_data.get("description", "")
+                }
+                # Save for potential reprocessing
+                with open(content_path, 'w', encoding='utf-8') as f:
+                    json.dump(viral_data, f, ensure_ascii=False, indent=2)
+                print(f"Generated title: {viral_data['title']}")
+                print(f"Generated description: {viral_data['description']}")
         else:
             # Regular mode: find viral segments
             log_stage("Generate/load viral segments")
-            if os.path.exists(content_path):
-                print(f"Loading cached viral segments from {content_path}")
-                with open(content_path, 'r', encoding='utf-8') as f:
-                    viral_data = json.load(f)
-            else:
-                report_progress(35, "מזהה קטעים ויראליים...")
-                print("No cached content.txt found—calling generate_viral()")
-                viral_data = generate_viral(transcript)
+                if os.path.exists(content_path):
+                    print(f"Loading cached viral segments from {content_path}")
+                    with open(content_path, 'r', encoding='utf-8') as f:
+                        viral_data = json.load(f)
+                else:
+                    report_progress(35, "מזהה קטעים ויראליים...")
+                    print("No cached content.txt found—calling generate_viral()")
+                    viral_data = generate_viral(transcript)
                 with open(content_path, 'w', encoding='utf-8') as f:
                     json.dump(viral_data, f, ensure_ascii=False, indent=2)
 
@@ -2757,9 +2878,9 @@ def main():
             # 5. Remove <zoom> tags from SRT -> output_croppedxxx.srt
             # Benefits: Only transcribe once (not twice), more efficient workflow
             log_stage("Extract video segments")
-            report_progress(45, f"מחלץ {len(segments)} קטעים...")
-            generate_segments(segments)
-            print(f"Extracted {len(segments)} segments")
+                report_progress(45, f"מחלץ {len(segments)} קטעים...")
+                generate_segments(segments)
+                print(f"Extracted {len(segments)} segments")
             
         for i in range(len(segments)):
             # Calculate progress: 50% to 80% spread across all clips
@@ -2809,10 +2930,10 @@ def main():
                     if success:
                         # Validate the output file before using it
                         if validate_video_file(raw_nosilence_path):
-                            # Use silence-removed version for transcription and cropping
-                            raw = raw_nosilence
-                            raw_path = raw_nosilence_path
-                            print(f"✅ Removed silence from segment {i}")
+                        # Use silence-removed version for transcription and cropping
+                        raw = raw_nosilence
+                        raw_path = raw_nosilence_path
+                        print(f"✅ Removed silence from segment {i}")
                         else:
                             print(f"❌ Silence removal created invalid file for segment {i}, using original")
                             # Keep using original file
@@ -2823,14 +2944,14 @@ def main():
                 
                 # STEP 2: Generate subtitles for the segment (after silence removal)
                 log_stage(f"Generate subtitles for segment {i}")
-                clip_progress = 60 + int((i / len(segments)) * 10)  # 60-70% progress range
-                report_progress(clip_progress, f"מתמלל קליפ {i+1}/{len(segments)}...")
-                
-                # Pass detected language from main transcription to clip transcription
-                raw_srt = generate_subtitle_for_clip(raw_path, detected_language)
-                
+                    clip_progress = 60 + int((i / len(segments)) * 10)  # 60-70% progress range
+                    report_progress(clip_progress, f"מתמלל קליפ {i+1}/{len(segments)}...")
+                    
+                    # Pass detected language from main transcription to clip transcription
+                    raw_srt = generate_subtitle_for_clip(raw_path, detected_language)
+                    
                 # Apply SRT overrides from GPT (colored words)
-                if viral_data and 'srt_overrides' in viral_data:
+                    if viral_data and 'srt_overrides' in viral_data:
                     apply_srt_overrides(raw_srt, viral_data['srt_overrides'], clip_index=i)
                 
                 # Apply zoom cues from GPT (subtitle_index_range format)
@@ -2838,8 +2959,8 @@ def main():
                     segment = viral_data['segments'][i]
                     if 'zoom_cues' in segment:
                         apply_zoom_cues_to_srt(raw_srt, segment['zoom_cues'], clip_index=i)
-                
-                print(f"✅ Generated subtitles for segment {i}")
+                    
+                    print(f"✅ Generated subtitles for segment {i}")
 
             # STEP 3: Crop with zoom effects based on SRT (which has <zoom> tags)
             # For short videos, check if already 9:16 before cropping
@@ -2863,8 +2984,8 @@ def main():
                 else:
                     # Short video needs cropping
                     log_stage(f"Crop short video to 9:16 with face tracking and zoom")
-                    generate_short(raw, nosil, srt_path=raw_srt)
-                    print(f"✅ Cropped short video with face tracking and zoom effects")
+                        generate_short(raw, nosil, srt_path=raw_srt)
+                        print(f"✅ Cropped short video with face tracking and zoom effects")
                 
                 # For short videos, copy and clean the SRT
                 nosil_path = os.path.join('tmp', nosil)
@@ -2886,9 +3007,9 @@ def main():
                 clip_progress = 70 + int((i / len(segments)) * 10)  # 70-80% progress range
                 report_progress(clip_progress, f"חותך קליפ {i+1}/{len(segments)}...")
                 
-                # Crop directly to final output (output_cropped)
-                generate_short(raw, nosil, srt_path=raw_srt)
-                print(f"✅ Cropped segment {i} with face tracking and zoom effects")
+                    # Crop directly to final output (output_cropped)
+                    generate_short(raw, nosil, srt_path=raw_srt)
+                    print(f"✅ Cropped segment {i} with face tracking and zoom effects")
                 
                 # Create final SRT by copying and removing <zoom> tags
                 nosil_path = os.path.join('tmp', nosil)
@@ -2910,29 +3031,29 @@ def main():
         
         # Step 1: Download logos from Supabase if needed
         log_stage("Download logos from Supabase (if needed)")
-        download_logos_from_styling_files(segments)
+            download_logos_from_styling_files(segments)
         
         # Step 2: Burn subtitles with styling (includes logo burning)
         log_stage("Burn subtitles with styling and logo onto videos")
-        print("Burning subtitles with styling to create final videos...")
+            print("Burning subtitles with styling to create final videos...")
                 
-        for segment_index in segments:
-            nosil = f"output_cropped{str(segment_index).zfill(3)}.mp4"
-            final = os.path.join('tmp', f"final_{str(segment_index).zfill(3)}.mp4")
-            nosil_path = os.path.join('tmp', nosil)
-            
-            # Check if the input file exists
-            if os.path.exists(nosil_path):
-                # Find the corresponding SRT file (contains <color> tags from GPT)
-                # In export mode, api.py downloads it as output_nosilence but uploads as output_cropped
-                srt_path = os.path.join('tmp', f"output_nosilence{str(segment_index).zfill(3)}.srt")
-                if os.path.exists(srt_path):
-                    burn_subtitles_with_styling(nosil_path, srt_path, final, segment_index)
-                    print(f"Generated: {final}")
+            for segment_index in segments:
+                nosil = f"output_cropped{str(segment_index).zfill(3)}.mp4"
+                final = os.path.join('tmp', f"final_{str(segment_index).zfill(3)}.mp4")
+                nosil_path = os.path.join('tmp', nosil)
+                
+                # Check if the input file exists
+                if os.path.exists(nosil_path):
+                    # Find the corresponding SRT file (contains <color> tags from GPT)
+                    # In export mode, api.py downloads it as output_nosilence but uploads as output_cropped
+                    srt_path = os.path.join('tmp', f"output_nosilence{str(segment_index).zfill(3)}.srt")
+                    if os.path.exists(srt_path):
+                        burn_subtitles_with_styling(nosil_path, srt_path, final, segment_index)
+                        print(f"Generated: {final}")
+                    else:
+                        print(f"Warning: SRT file not found: {srt_path}")
                 else:
-                    print(f"Warning: SRT file not found: {srt_path}")
-            else:
-                print(f"Warning: Input video file not found: {nosil_path}")
+                    print(f"Warning: Input video file not found: {nosil_path}")
 
 def process_video_file(input_path: str, out_dir: str = "tmp", settings: dict = None, video_id: str = None, progress_callback=None, is_short_video: bool = False):
     """

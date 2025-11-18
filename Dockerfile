@@ -44,11 +44,13 @@ RUN apt-get update && apt-get install -y \
         wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Install NVIDIA Video Codec SDK headers (required for NVENC compilation)
+# Install NVIDIA Video Codec SDK headers pinned to 12.1 (compatible with driver 535.x)
 # The nv-codec-headers provide the necessary headers for NVENC support
+# Using version 12.1.14.0 instead of latest (13.0) to support older drivers
 RUN cd /tmp && \
-    git clone --depth 1 https://github.com/FFmpeg/nv-codec-headers.git && \
+    git clone https://github.com/FFmpeg/nv-codec-headers.git && \
     cd nv-codec-headers && \
+    git checkout n12.1.14.0 && \
     make && \
     make install && \
     cd / && \
