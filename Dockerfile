@@ -57,6 +57,7 @@ RUN cd /tmp && \
 # Compile FFmpeg from source with NVENC support
 # Note: --enable-libnpp is optional (used for GPU-accelerated filters like scale_npp)
 # NVENC encoding works without it, so we omit it to avoid build issues
+# Removed --pkg-config-flags="--static" as it causes issues with shared libraries
 RUN cd /tmp && \
     git clone --depth 1 https://git.ffmpeg.org/ffmpeg.git ffmpeg-src && \
     cd ffmpeg-src && \
@@ -80,8 +81,7 @@ RUN cd /tmp && \
         --extra-ldflags="-L/usr/local/cuda/lib64" \
         --prefix=/usr/local \
         --enable-shared \
-        --disable-static \
-        --pkg-config-flags="--static" && \
+        --disable-static && \
     make -j$(nproc) && \
     make install && \
     cd / && \
