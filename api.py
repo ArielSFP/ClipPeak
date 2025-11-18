@@ -225,16 +225,32 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     print("STAGE: Check TalkNet models")
     print("="*60)
     print("▶️  RUNNING: Check TalkNet models (auto-continue mode)\n")
-    from reelsfy_folder.reelsfy import GLOBAL_TALKNET, GLOBAL_TALKNET_DET
     
-    # Check if models are loaded
-    with MODEL_LOADING_LOCK:
-        models_ready = MODELS_LOADED and (GLOBAL_TALKNET is not None and GLOBAL_TALKNET_DET is not None)
-        still_loading = MODELS_LOADING and not MODELS_LOADED
+    # Declare global variables to avoid UnboundLocalError (must be before any usage)
+    global MODELS_LOADING, MODELS_LOADED, MODEL_LOAD_ERROR
+    
+    try:
+        from reelsfy_folder.reelsfy import GLOBAL_TALKNET, GLOBAL_TALKNET_DET
+        
+        # Check if models are loaded
+        with MODEL_LOADING_LOCK:
+            models_ready = MODELS_LOADED and (GLOBAL_TALKNET is not None and GLOBAL_TALKNET_DET is not None)
+            still_loading = MODELS_LOADING and not MODELS_LOADED
+    except Exception as e:
+        print(f"⚠️  Error checking model status: {e}")
+        print("   Continuing with model loading attempt...")
+        models_ready = False
+        still_loading = False
     
     if models_ready:
         print("✅ TalkNet models already loaded (from background thread)\n")
     elif still_loading:
+        # Import here to avoid issues if import failed above
+        try:
+            from reelsfy_folder.reelsfy import GLOBAL_TALKNET, GLOBAL_TALKNET_DET
+        except ImportError:
+            GLOBAL_TALKNET = None
+            GLOBAL_TALKNET_DET = None
         print("⏳ TalkNet models are still loading in background...")
         print("   Waiting for models to finish loading...")
         # Wait for models to load (with timeout)
@@ -244,26 +260,36 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
         while waited < max_wait:
             time.sleep(wait_interval)
             waited += wait_interval
-            with MODEL_LOADING_LOCK:
-                if MODELS_LOADED and (GLOBAL_TALKNET is not None and GLOBAL_TALKNET_DET is not None):
-                    print(f"✅ TalkNet models loaded successfully (waited {waited}s for background loading)\n")
-                    break
-                if not MODELS_LOADING and MODEL_LOAD_ERROR:
-                    # Background loading failed, try to load now
-                    print(f"⚠️  Background loading failed: {MODEL_LOAD_ERROR}")
-                    print("   Attempting to load models now...")
-                    try:
-                        initialize_models()
-                        with MODEL_LOADING_LOCK:
-                            MODELS_LOADED = True
-                            MODELS_LOADING = False
-                            MODEL_LOAD_ERROR = None
-                        print("✅ TalkNet models loaded successfully\n")
-                        break
-                    except Exception as e:
-                        print(f"❌ Failed to load TalkNet models: {e}")
-                        print("⚠️  Video processing may fail without TalkNet\n")
-                        break
+            try:
+                with MODEL_LOADING_LOCK:
+                    if MODELS_LOADED:
+                        # Re-import to get latest model references
+                        try:
+                            from reelsfy_folder.reelsfy import GLOBAL_TALKNET, GLOBAL_TALKNET_DET
+                            if GLOBAL_TALKNET is not None and GLOBAL_TALKNET_DET is not None:
+                                print(f"✅ TalkNet models loaded successfully (waited {waited}s for background loading)\n")
+                                break
+                        except ImportError:
+                            pass
+                    if not MODELS_LOADING and MODEL_LOAD_ERROR:
+                        # Background loading failed, try to load now
+                        print(f"⚠️  Background loading failed: {MODEL_LOAD_ERROR}")
+                        print("   Attempting to load models now...")
+                        try:
+                            initialize_models()
+                            with MODEL_LOADING_LOCK:
+                                MODELS_LOADED = True
+                                MODELS_LOADING = False
+                                MODEL_LOAD_ERROR = None
+                            print("✅ TalkNet models loaded successfully\n")
+                            break
+                        except Exception as e:
+                            print(f"❌ Failed to load TalkNet models: {e}")
+                            print("⚠️  Video processing may fail without TalkNet\n")
+                            break
+            except Exception as e:
+                print(f"⚠️  Error while waiting for models: {e}")
+                # Continue waiting
         else:
             # Timeout reached
             print("⏰ Timeout waiting for models to load, attempting direct load...")
@@ -290,6 +316,14 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
         except Exception as e:
             print(f"❌ Failed to load TalkNet models: {e}")
             print("⚠️  Video processing may fail without TalkNet\n")
+    
+    # Ensure we have model references even if there were errors above
+    try:
+        from reelsfy_folder.reelsfy import GLOBAL_TALKNET, GLOBAL_TALKNET_DET
+    except ImportError:
+        print("⚠️  Warning: Could not import TalkNet models, continuing anyway...")
+        GLOBAL_TALKNET = None
+        GLOBAL_TALKNET_DET = None
     
     # 1) Find the video's UUID in the videos table
     print("\n" + "="*60)
