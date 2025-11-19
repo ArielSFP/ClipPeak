@@ -33,6 +33,7 @@ import argparse
 import math
 import re
 import io
+import time
 from datetime import datetime
 import unicodedata as ud
 from collections import Counter
@@ -268,6 +269,34 @@ def get_video_fps(video_path: str):
         return float(fps_str)
     except Exception as e:
         print(f"⚠️  Could not determine FPS for {video_path}: {e}")
+        return None
+
+def get_video_resolution(video_path: str):
+    """
+    Return the resolution (width, height) of the first video stream, or None if unknown.
+    Returns tuple (width, height) as integers.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                video_path
+            ],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        lines = result.stdout.strip().split('\n')
+        if len(lines) >= 2:
+            width = int(lines[0].strip())
+            height = int(lines[1].strip())
+            return (width, height)
+        return None
+    except Exception as e:
+        print(f"⚠️  Could not determine resolution for {video_path}: {e}")
         return None
 
 def format_fps_value(fps: float) -> str:
@@ -1497,25 +1526,32 @@ def generate_segments(segments):
 
     plan = (PROCESSING_SETTINGS.get('subscriptionPlan') or 'free').lower()
     source_fps = SOURCE_VIDEO_FPS
-    fps_override = None
-
-    if source_fps and source_fps > 30.0:
-        if plan in ('pro', 'premium'):
-            if source_fps > 60.0:
-                fps_override = 60.0
+    
+    # FPS override logic is now handled per-segment based on tier
+    # This is just for informational logging
+    if source_fps:
+        if source_fps > 60:
+            if plan in ('pro', 'premium'):
+                print(f"🎞️  {plan.capitalize()} plan: segments will be limited to 60 FPS (source: {source_fps:.2f} FPS)")
+            else:
+                print(f"🎞️  Basic plan: segments will be limited to 30 FPS (source: {source_fps:.2f} FPS)")
+        elif source_fps > 30:
+            if plan not in ('pro', 'premium'):
+                print(f"🎞️  Basic plan: segments will be limited to 30 FPS (source: {source_fps:.2f} FPS)")
+            else:
+                print(f"🎞️  {plan.capitalize()} plan: segments will keep original FPS (source: {source_fps:.2f} FPS)")
         else:
-            fps_override = 30.0
+            print(f"🎞️  Source FPS: {source_fps:.2f} (segments will keep original FPS)")
 
-    if fps_override:
-        if plan in ('pro', 'premium'):
-            print(f"🎞️  {plan.capitalize()} plan detected: limiting extracted segments to 60 FPS (source: {source_fps:.2f} FPS)")
-        else:
-            print(f"🎞️  {plan.capitalize()} plan detected: downsampling extracted segments to 30 FPS (source: {source_fps:.2f} FPS)")
-
+    total_segments = len(segments)
+    print(f"\n📹 Starting extraction of {total_segments} segments...")
+    
     for i, seg in enumerate(segments):
+        segment_start_time = time.time()
         out = os.path.join('tmp', f"output{str(i).zfill(3)}.mp4")
+        
         if os.path.exists(out):
-            print(f"Skipping segment extraction, exists: {out}")
+            print(f"⏭️  Segment {i+1}/{total_segments}: Skipping (already exists: {out})")
             continue
 
         # When SFP mode is off, seg is a dict; with SFP testing it's an int
@@ -1528,28 +1564,122 @@ def generate_segments(segments):
             continue
 
         dur = end - start
+        original_end = end
         if dur < 25:  end = start + 25
         if dur > 180: end = start + 180
+        
+        if end != original_end:
+            print(f"   ⚠️  Adjusted duration: {dur:.1f}s -> {end - start:.1f}s")
 
-        # Use regular scale filter (works with CUDA hardware acceleration)
-        # Note: scale_npp requires NPP support which may not be available in all FFmpeg builds
-        video_filters = ["scale=1920:1080"]
-        if fps_override:
-            video_filters.append(f"fps={format_fps_value(fps_override)}")
-        filter_expr = ",".join(video_filters)
-
-        # Note: When using CUDA hardware acceleration, we decode to CUDA memory
-        # but scale filter works on CPU frames, so we don't use -hwaccel_output_format cuda here
-        # The h264_nvenc encoder will handle GPU encoding efficiently (with CPU fallback)
-        cmd_list = [
-            "ffmpeg", "-y", "-hwaccel", "cuda", "-i", "tmp/input_video.mp4",
-            "-ss", str(start), "-to", str(end), "-vf", filter_expr,
-            "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "3M", "-c:a", "copy", out
-        ]
-        result = run_ffmpeg_with_nvenc_fallback(cmd_list, f"Extracting segment {i+1}/{len(segments)}")
+        # Check if we need to re-encode (scale down or change FPS) or can use stream copy
+        input_video = "tmp/input_video.mp4"
+        video_resolution = get_video_resolution(input_video)
+        needs_scaling = False
+        needs_fps_change = False
+        target_fps = None
+        
+        # Resolution check: only scale DOWN if above 1920x1080, never scale UP
+        if video_resolution:
+            width, height = video_resolution
+            if width > 1920 or height > 1080:
+                needs_scaling = True
+                print(f"   📐 Resolution: {width}x{height} -> scaling DOWN to 1920x1080")
+            elif width < 1920 or height < 1080:
+                print(f"   📐 Resolution: {width}x{height} (keeping original - no upscaling)")
+            else:
+                print(f"   📐 Resolution: {width}x{height} (no scaling needed)")
+        else:
+            # If we can't determine resolution, don't assume scaling is needed
+            print(f"   ⚠️  Could not determine resolution, will keep original")
+        
+        # FPS check: apply tier-based FPS limits
+        if source_fps:
+            if source_fps > 60:
+                # Above 60 FPS: Pro/Premium → 60, Basic → 30
+                if plan in ('pro', 'premium'):
+                    target_fps = 60.0
+                    needs_fps_change = True
+                    print(f"   🎞️  FPS: {source_fps:.2f} -> {plan.capitalize()} plan: limiting to 60 FPS")
+                else:
+                    target_fps = 30.0
+                    needs_fps_change = True
+                    print(f"   🎞️  FPS: {source_fps:.2f} -> Basic plan: limiting to 30 FPS")
+            elif source_fps > 30:
+                # Between 30-60 FPS: Basic → 30, Pro/Premium → keep original
+                if plan not in ('pro', 'premium'):
+                    target_fps = 30.0
+                    needs_fps_change = True
+                    print(f"   🎞️  FPS: {source_fps:.2f} -> Basic plan: limiting to 30 FPS")
+                else:
+                    print(f"   🎞️  FPS: {source_fps:.2f} -> {plan.capitalize()} plan: keeping original FPS")
+            else:
+                # 30 FPS or below: keep original for all tiers
+                print(f"   🎞️  FPS: {source_fps:.2f} (keeping original - no change needed)")
+        
+        # Build FFmpeg command - use stream copy if no changes needed
+        if not needs_scaling and not needs_fps_change:
+            # Fast path: stream copy (no re-encoding)
+            print(f"   ⚡ Using stream copy (no re-encoding needed - much faster!)")
+            duration = end - start
+            cmd_list = [
+                "ffmpeg", "-y", "-ss", str(start), "-t", str(duration),
+                "-i", input_video,
+                "-c", "copy", out
+            ]
+        else:
+            # Re-encode path: scale down and/or change FPS
+            video_filters = []
+            if needs_scaling:
+                video_filters.append("scale=1920:1080")
+            if needs_fps_change and target_fps:
+                video_filters.append(f"fps={format_fps_value(target_fps)}")
+            
+            filter_expr = ",".join(video_filters) if video_filters else None
+            
+            cmd_list = [
+                "ffmpeg", "-y", "-hwaccel", "cuda", "-i", input_video,
+                "-ss", str(start), "-to", str(end)
+            ]
+            
+            if filter_expr:
+                cmd_list.extend(["-vf", filter_expr])
+            
+            cmd_list.extend([
+                "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "3M",
+                "-c:a", "copy", out
+            ])
+        
+        # Log the command being executed
+        cmd_str = " ".join(cmd_list)
+        print(f"\n🎬 Segment {i+1}/{total_segments}:")
+        print(f"   📍 Time range: {start:.2f}s - {end:.2f}s (duration: {end - start:.2f}s)")
+        print(f"   📁 Output: {out}")
+        print(f"   🔧 FFmpeg command:")
+        print(f"      {cmd_str}")
+        print(f"   ⏳ Extracting...")
+        
+        # Use appropriate execution method based on whether we're encoding or copying
+        if not needs_scaling and not needs_fps_change:
+            # Stream copy - no encoding, so no need for NVENC fallback
+            result = subprocess.run(cmd_list, capture_output=True, text=True)
+        else:
+            # Re-encoding - use NVENC with fallback
+            result = run_ffmpeg_with_nvenc_fallback(cmd_list, f"Extracting segment {i+1}/{total_segments}")
+        
+        segment_elapsed = time.time() - segment_start_time
+        
         if result.returncode != 0:
-            print(f"❌ Failed to extract segment {i+1}: {result.stderr[:200]}")
+            print(f"   ❌ Failed to extract segment {i+1} (took {segment_elapsed:.1f}s)")
+            print(f"   Error: {result.stderr[:500]}")
             raise RuntimeError(f"FFmpeg segment extraction failed for segment {i+1}")
+        else:
+            # Verify output file was created
+            if os.path.exists(out):
+                file_size_mb = os.path.getsize(out) / (1024 * 1024)
+                print(f"   ✅ Successfully extracted segment {i+1} in {segment_elapsed:.1f}s")
+                print(f"   📦 Output file size: {file_size_mb:.2f} MB")
+            else:
+                print(f"   ⚠️  Warning: Command succeeded but output file not found: {out}")
 
 def generate_short(input_file: str, output_file: str, srt_path: str = None, detect_every=1, ease=0.2, zoom_cues=None):
     """
@@ -2316,66 +2446,89 @@ def remove_silence_with_ffmpeg(input_video: str, output_video: str,
         video_filter = f"select='{segment_filter}', setpts=N/FRAME_RATE/TB"
         audio_filter = f"aselect='{segment_filter}', asetpts=N/SR/TB"
         
-        # Step 5: Create temporary filter files
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode="w", encoding="UTF-8", prefix="silence_video_", 
-                                        suffix=".txt", delete=False) as vFile:
-            vFile.write(video_filter)
-            video_filter_file = vFile.name
+        # Step 5: Try inline filters first (more compatible), fallback to filter scripts
+        print("   Step 2: Removing silence...")
+        has_audio = has_audio_stream(input_video)
         
-        with tempfile.NamedTemporaryFile(mode="w", encoding="UTF-8", prefix="silence_audio_", 
-                                        suffix=".txt", delete=False) as aFile:
-            aFile.write(audio_filter)
-            audio_filter_file = aFile.name
+        # Try inline filters first
+        if has_audio:
+            command = [
+                "ffmpeg", "-y", "-hwaccel", "cuda", "-i", input_video,
+                "-vf", video_filter,
+                "-af", audio_filter,
+                "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "3M",
+                "-c:a", "aac",
+                output_video
+            ]
+        else:
+            # Video only (no audio)
+            command = [
+                "ffmpeg", "-y", "-hwaccel", "cuda", "-i", input_video,
+                "-vf", video_filter,
+                "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "3M",
+                output_video
+            ]
         
-        try:
-            # Step 6: Run ffmpeg with filter scripts
-            print("   Step 2: Removing silence...")
-            has_audio = has_audio_stream(input_video)
+        result = run_ffmpeg_with_nvenc_fallback(command, "Removing silence")
+        
+        # If inline filters failed, try filter script files as fallback
+        if result.returncode != 0:
+            print("   ⚠️  Inline filters failed, trying filter script files...")
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode="w", encoding="UTF-8", prefix="silence_video_", 
+                                            suffix=".txt", delete=False) as vFile:
+                vFile.write(video_filter)
+                video_filter_file = vFile.name
             
-            if has_audio:
-                command = [
-                    "ffmpeg", "-y", "-hwaccel", "cuda", "-i", input_video,
-                    "-filter_script:v", video_filter_file,
-                    "-filter_script:a", audio_filter_file,
-                    "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "3M",
-                    "-c:a", "aac",
-                    output_video
-                ]
-            else:
-                # Video only (no audio)
-                command = [
-                    "ffmpeg", "-y", "-hwaccel", "cuda", "-i", input_video,
-                    "-filter_script:v", video_filter_file,
-                    "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "3M",
-                    output_video
-                ]
+            with tempfile.NamedTemporaryFile(mode="w", encoding="UTF-8", prefix="silence_audio_", 
+                                            suffix=".txt", delete=False) as aFile:
+                aFile.write(audio_filter)
+                audio_filter_file = aFile.name
             
-            result = run_ffmpeg_with_nvenc_fallback(command, "Removing silence")
-            
-            if result.returncode != 0:
-                print(f"❌ FFmpeg failed with return code {result.returncode}")
-                print(f"   stderr: {result.stderr[:500]}")  # First 500 chars of error
-                return False
-            
-            if not os.path.exists(output_video):
-                print(f"⚠️  Output file not created: {output_video}")
-                return False
-            
-            # Validate the output video file
-            if not validate_video_file(output_video):
-                print(f"❌ Output video file is corrupted or invalid: {output_video}")
-                return False
-            
-                print(f"✅ Successfully removed silence: {output_video}")
-                return True
-        finally:
-            # Cleanup temp files
             try:
-                os.remove(video_filter_file)
-                os.remove(audio_filter_file)
-            except:
-                pass
+                if has_audio:
+                    command = [
+                        "ffmpeg", "-y", "-hwaccel", "cuda", "-i", input_video,
+                        "-filter_script:v", video_filter_file,
+                        "-filter_script:a", audio_filter_file,
+                        "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "3M",
+                        "-c:a", "aac",
+                        output_video
+                    ]
+                else:
+                    # Video only (no audio)
+                    command = [
+                        "ffmpeg", "-y", "-hwaccel", "cuda", "-i", input_video,
+                        "-filter_script:v", video_filter_file,
+                        "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "3M",
+                        output_video
+                    ]
+                
+                result = run_ffmpeg_with_nvenc_fallback(command, "Removing silence (fallback)")
+            finally:
+                # Cleanup temp files
+                try:
+                    os.remove(video_filter_file)
+                    os.remove(audio_filter_file)
+                except:
+                    pass
+        
+        if result.returncode != 0:
+            print(f"❌ FFmpeg failed with return code {result.returncode}")
+            print(f"   stderr: {result.stderr[:500]}")  # First 500 chars of error
+            return False
+        
+        if not os.path.exists(output_video):
+            print(f"⚠️  Output file not created: {output_video}")
+            return False
+        
+        # Validate the output video file
+        if not validate_video_file(output_video):
+            print(f"❌ Output video file is corrupted or invalid: {output_video}")
+            return False
+        
+        print(f"✅ Successfully removed silence: {output_video}")
+        return True
             
     except Exception as e:
         print(f"❌ Error removing silence: {e}")

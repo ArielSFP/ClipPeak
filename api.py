@@ -663,8 +663,8 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     print("="*60 + "\n")
     
     # Calculate and print total processing time
-    end_time = time.time()
-    total_time = end_time - start_time
+    processing_end_time = time.time()
+    total_time = processing_end_time - start_time
     minutes = int(total_time // 60)
     seconds = int(total_time % 60)
     
