@@ -3103,7 +3103,7 @@ def main():
                 with open(content_path, 'r', encoding='utf-8') as f:
                     viral_data = json.load(f)
             else:
-                report_progress(45, "מזהה קטעים ויראליים...")  # GPT starts at 45% (after transcription ends at 45%)
+                report_progress(47, "מזהה קטעים ויראליים...")  # GPT starts at 45% (after transcription ends at 45%)
                 print("No cached content.txt found—calling generate_viral()")
                 viral_data = generate_viral(transcript)
                 report_progress(50, "קטעים ויראליים זוהו")  # GPT ends at 50%
@@ -3187,14 +3187,15 @@ def main():
             # 5. Remove <zoom> tags from SRT -> output_croppedxxx.srt
             # Benefits: Only transcribe once (not twice), more efficient workflow
             log_stage("Extract video segments")
-            report_progress(50, f"מחלץ {len(segments)} קטעים...")
+            report_progress(52, f"מחלץ {len(segments)} קטעים...")
             generate_segments(segments)
             print(f"Extracted {len(segments)} segments")
             
         for i in range(len(segments)):
             # Calculate progress: 50% to 90% spread across all clips
-            clip_progress = 50 + int((i / len(segments)) * 40)
-            report_progress(clip_progress, f"מעבד קליפ {i+1}/{len(segments)}...")
+            #clip_progress = 52 + int((i / len(segments)) * 40)
+            #report_progress(clip_progress, f"מעבד קליפ {i+1}/{len(segments)}...")
+            log_stage(f"Processing clip {i+1}/{len(segments)}")
             
             crop  = f"output_croppedwithoutcutting{str(i).zfill(3)}.mp4"
             nosil = f"output_cropped{str(i).zfill(3)}.mp4"
@@ -3224,7 +3225,7 @@ def main():
                 # STEP 1: Remove silence from extracted segment (if enabled)
                 if auto_cuts_enabled:
                     log_stage(f"Remove silence from segment {i}")
-                    clip_progress = 50 + int((i / len(segments)) * 10)  # 50-60% progress range
+                    clip_progress = 52 + int((i / len(segments)) * 8)  # 50-60% progress range
                     report_progress(clip_progress, f"מסיר דממות מקליפ {i+1}/{len(segments)}...")
                     
                     raw_nosilence = f"output_nosilence{str(i).zfill(3)}.mp4"
