@@ -81,8 +81,16 @@ SKIP_MODE = False  # Global skip mode - if True, auto-continue all stages
 GLOBAL_TALKNET = None
 GLOBAL_TALKNET_DET = None
 
+# Global variable to track last reported progress (prevents backward jumps)
+_LAST_PROGRESS = 0
+
 def report_progress(progress: int, stage: str, eta_seconds: int = None):
-    """Helper function to report progress if callback is available."""
+    """Helper function to report progress if callback is available.
+    Ensures progress never decreases (only increases or stays the same)."""
+    global _LAST_PROGRESS
+    # Ensure progress never decreases - use max to prevent backward jumps
+    progress = max(_LAST_PROGRESS, progress)
+    _LAST_PROGRESS = progress
     if PROGRESS_CALLBACK and VIDEO_ID:
         PROGRESS_CALLBACK(VIDEO_ID, progress, stage, eta_seconds)
     else:
@@ -1034,11 +1042,11 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
                     
                     # Report progress every 5% or every 10 seconds
                     # Scale transcription progress based on mode
-                    # Short mode: 15-65% (50% range), Regular mode: 15-45% (30% range)
+                    # Short mode: 15-65% (50% range), Regular mode: 0-45% (45% range)
                     if IS_SHORT_VIDEO:
                         scaled_progress = 15 + int((progress_pct / 100) * 50)  # 15-65%
                     else:
-                        scaled_progress = 15 + int((progress_pct / 100) * 30)  # 15-45%
+                        scaled_progress = int((progress_pct / 100) * 45)  # 0-45% for normal mode
                     if progress_pct % 5 == 0 or elapsed_time % 10 < 1:
                         report_progress(scaled_progress, f"מעתיק... ({progress_pct}%)", eta_seconds)
         
@@ -1275,12 +1283,12 @@ def generate_short_video_styling(transcript: str, auto_zoom: bool, color_hex: st
     try:
         # Call OpenAI API
         resp = openai_client.chat.completions.create(
-            model="gpt-5-nano",
+            model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user}
             ],
-            reasoning_effort="low",
+            temperature=0.2,
         )
         text = resp.choices[0].message.content.strip()
         
@@ -1493,12 +1501,12 @@ def generate_viral(transcript: str) -> dict:
         
         # Call OpenAI API
         resp = openai_client.chat.completions.create(
-            model="gpt-5-nano",
+            model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user}
             ],
-            reasoning_effort="low",
+            temperature=0.2,
         )
         text = resp.choices[0].message.content.strip()
         
@@ -1743,6 +1751,9 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
     MIN_BOX = 0.30         # min relative width when face tiny
     DEADZONE_PCT = 0.20    # 20% central deadzone (face can move within this without tracking)
     SMOOTH_FOLLOW_RATE = 0.08  # Smooth following rate when face is outside deadzone (lower = smoother, 0.08 = very smooth)
+    IOU_THRESHOLD = 0.3    # Minimum IOU to consider faces similar (prevents jumps when same person but different track_id)
+    CENTER_DISTANCE_THRESHOLD = 0.15  # Maximum normalized center distance to consider faces similar (15% of frame size)
+    SPEAKER_CHANGE_SMOOTH_RATE = 0.25  # Smoothing rate when track_id changes but faces are similar (faster than normal following)
     
     print("🎤 TalkNet Active Speaker Detection")
     print("="*60)
@@ -1828,6 +1839,52 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
     
     def clamp(v, lo, hi):
         return max(lo, min(hi, v))
+    
+    def bbox_iou(boxA, boxB):
+        """Calculate Intersection over Union (IOU) between two bounding boxes.
+        Boxes are in format (x, y, w, h).
+        """
+        # Convert to (x1, y1, x2, y2) format
+        x1A, y1A = boxA[0], boxA[1]
+        x2A, y2A = boxA[0] + boxA[2], boxA[1] + boxA[3]
+        x1B, y1B = boxB[0], boxB[1]
+        x2B, y2B = boxB[0] + boxB[2], boxB[1] + boxB[3]
+        
+        # Calculate intersection area
+        inter_x1 = max(x1A, x1B)
+        inter_y1 = max(y1A, y1B)
+        inter_x2 = min(x2A, x2B)
+        inter_y2 = min(y2A, y2B)
+        
+        if inter_x2 <= inter_x1 or inter_y2 <= inter_y1:
+            return 0.0
+        
+        inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
+        
+        # Calculate union area
+        boxA_area = boxA[2] * boxA[3]
+        boxB_area = boxB[2] * boxB[3]
+        union_area = boxA_area + boxB_area - inter_area
+        
+        if union_area == 0:
+            return 0.0
+        
+        return inter_area / union_area
+    
+    def bbox_center_distance(boxA, boxB):
+        """Calculate Euclidean distance between centers of two bounding boxes.
+        Boxes are in format (x, y, w, h).
+        Returns normalized distance (0-1 scale based on frame size).
+        """
+        cxA = boxA[0] + boxA[2] / 2
+        cyA = boxA[1] + boxA[3] / 2
+        cxB = boxB[0] + boxB[2] / 2
+        cyB = boxB[1] + boxB[3] / 2
+        
+        dx = (cxA - cxB) / W
+        dy = (cyA - cyB) / H
+        
+        return math.sqrt(dx*dx + dy*dy)
     
     def fit_aspect_with_margin(x, y, w, h, W, H, aspect, margin):
         cx, cy = x + w/2, y + h/2
@@ -1922,12 +1979,30 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
             h = int(w / DESIRED_ASPECT)
             target_box = ((W - w)//2, (H - h)//2, w, h)
         
-        # Apply smoothing with deadzone
-        if speaker_changed:
-            # Instant jump on speaker change (no smoothing)
-            smooth_bbox = target_box
+        # Apply smoothing with deadzone and position similarity checks
+        if speaker_changed and smooth_bbox is not None:
+            # Track ID changed - check if faces are actually similar (same person)
+            # If similar, use smooth transition instead of instant jump
+            iou = bbox_iou(smooth_bbox, target_box)
+            center_dist = bbox_center_distance(smooth_bbox, target_box)
+            
+            faces_are_similar = (iou >= IOU_THRESHOLD or center_dist <= CENTER_DISTANCE_THRESHOLD)
+            
+            if faces_are_similar:
+                # Same person, just track_id changed (tracking reacquisition) - use smooth transition
+                # Use faster smoothing than normal following for track_id changes
+                smooth_bbox = ema_bbox(smooth_bbox, target_box, 1.0 - SPEAKER_CHANGE_SMOOTH_RATE)
+            else:
+                # Different person (or significant movement) - allow instant jump only if movement is large
+                # For small movements, still smooth to avoid jitter
+                if center_dist > CENTER_DISTANCE_THRESHOLD * 2:  # Large movement (30%+ of frame)
+                    # Large movement - instant jump to new speaker
+                    smooth_bbox = target_box
+                else:
+                    # Small movement despite track_id change - smooth it to prevent jitter
+                    smooth_bbox = ema_bbox(smooth_bbox, target_box, 1.0 - SPEAKER_CHANGE_SMOOTH_RATE)
         else:
-            # Same speaker - use smooth following with deadzone
+            # Same speaker (or no previous speaker) - use smooth following with deadzone
             if smooth_bbox is not None:
                 # Calculate current crop area based on smooth_bbox (where we're currently looking)
                 cx, cy, cw, ch = fit_aspect_with_margin(*smooth_bbox, W, H, DESIRED_ASPECT, MARGIN)
@@ -2172,11 +2247,16 @@ def apply_zoom_effects_only(input_file: str, output_file: str, srt_path: str = N
     print(f"Applied zoom effects to video: {out_path}", flush=True)
     
 # --- Helper function for per-clip transcription ---
-def transcribe_clip_with_faster_whisper(input_path: str, detected_language: str = None) -> str:
+def transcribe_clip_with_faster_whisper(input_path: str, detected_language: str = None, progress_range: tuple = None) -> str:
     """
     Transcribe a single clip using faster-whisper.
     If detected_language is provided, uses it; otherwise auto-detects.
     Returns the path to the generated SRT file.
+    
+    Args:
+        input_path: Path to input video file
+        detected_language: Language code detected from main transcription
+        progress_range: Tuple (min_progress, max_progress) for progress reporting, or None to use default scaling
     """
     base = os.path.splitext(os.path.basename(input_path))[0]
     srt_path = os.path.join('tmp', f"{base}.srt")
@@ -2186,6 +2266,11 @@ def transcribe_clip_with_faster_whisper(input_path: str, detected_language: str 
         print(f"⚠️  Clip '{base}' has no audio stream, creating empty SRT")
         with open(srt_path, 'w', encoding='utf-8') as f:
             f.write("")
+        # Report progress even when skipping (no audio) to avoid jumps
+        if progress_range:
+            min_progress, max_progress = progress_range
+            # Report completion at end of range since we're skipping
+            report_progress(max_progress, f"קליפ ללא אודיו - דילוג...")
         return srt_path
     
     try:
@@ -2284,11 +2369,17 @@ def transcribe_clip_with_faster_whisper(input_path: str, detected_language: str 
                     eta_seconds = max(0, int(estimated_total_time - elapsed_time))
                     
                     # Report progress every 10% or every 5 seconds
-                    # Clip transcription uses same scaling as main transcription (mode-aware)
-                    if IS_SHORT_VIDEO:
-                        scaled_progress = 15 + int((progress_pct / 100) * 50)  # 15-65%
+                    # Use provided progress_range if available, otherwise use default scaling
+                    if progress_range:
+                        # Use provided range (for clip processing in main loop)
+                        min_progress, max_progress = progress_range
+                        scaled_progress = min_progress + int((progress_pct / 100) * (max_progress - min_progress))
                     else:
-                        scaled_progress = 15 + int((progress_pct / 100) * 30)  # 15-45%
+                        # Default scaling based on mode (for standalone calls)
+                        if IS_SHORT_VIDEO:
+                            scaled_progress = 15 + int((progress_pct / 100) * 50)  # 15-65%
+                        else:
+                            scaled_progress = int((progress_pct / 100) * 45)  # 0-45% for normal mode
                     if progress_pct % 10 == 0 or elapsed_time % 5 < 1:
                         report_progress(scaled_progress, f"מעתיק קליפ... ({progress_pct}%)", eta_seconds)
         
@@ -2311,7 +2402,15 @@ def transcribe_clip_with_faster_whisper(input_path: str, detected_language: str 
         return srt_path
 
 # --- SRT gen (ALWAYS reprocess; backup original as old_*.srt; enforce max 5 words & min 1.0s) ---
-def generate_subtitle_for_clip(input_path: str, detected_language: str = None) -> str:
+def generate_subtitle_for_clip(input_path: str, detected_language: str = None, progress_range: tuple = None) -> str:
+    """
+    Generate subtitle for a clip using faster-whisper.
+    
+    Args:
+        input_path: Path to input video file
+        detected_language: Language code detected from main transcription
+        progress_range: Tuple (min_progress, max_progress) for progress reporting, or None to use default scaling
+    """
     """
     Generate subtitles for a clip, with optional language hint.
     Only generates if SRT doesn't already exist, then enforces max 5 words per cue with min 1.0s duration.
@@ -2324,7 +2423,7 @@ def generate_subtitle_for_clip(input_path: str, detected_language: str = None) -
     if not os.path.exists(srt_path):
         print(f"Generating new SRT for {base}...")
         try:
-            transcribe_clip_with_faster_whisper(input_path, detected_language)
+            transcribe_clip_with_faster_whisper(input_path, detected_language, progress_range)
         except Exception as e:
             print(f"Warning: transcription failed ({e}), trying auto_subtitle fallback")
             cmd = f"auto_subtitle {input_path} --srt_only True -o tmp/ --model turbo"
@@ -3058,13 +3157,18 @@ def main():
 
         # transcript (for GPT prompt context) and detected language
         log_stage("Generate transcript using auto_subtitle")
-        report_progress(15, "מתמלל סרטון...")
+        # For normal mode, start transcription at 0% (everything before is 0%)
+        # For short video mode, keep existing 15% start
+        if IS_SHORT_VIDEO:
+            report_progress(15, "מתמלל סרטון...")
+        else:
+            report_progress(0, "מתמלל סרטון...")  # Normal mode: start at 0%
         transcript, detected_language = generate_transcript(src)
         # Report end of transcription based on mode
         if IS_SHORT_VIDEO:
             report_progress(65, "תמלול הושלם")  # Short mode: 15-65%
         else:
-            report_progress(45, "תמלול הושלם")  # Regular mode: 15-45%
+            report_progress(45, "תמלול הושלם")  # Regular mode: 0-45%
         print(f"Transcript generated (Language: {detected_language})")
     
     else:
@@ -3254,11 +3358,13 @@ def main():
                 
                 # STEP 2: Generate subtitles for the segment (after silence removal)
                 log_stage(f"Generate subtitles for segment {i}")
-                clip_progress = 60 + int((i / len(segments)) * 10)  # 60-70% progress range
-                report_progress(clip_progress, f"מתמלל קליפ {i+1}/{len(segments)}...")
+                # Progress range for clip transcription: 60-70% (reported internally by generate_subtitle_for_clip)
+                clip_progress_min = 60 + int((i / len(segments)) * 10)  # Start of range for this clip
+                clip_progress_max = 60 + int(((i + 1) / len(segments)) * 10)  # End of range for this clip
+                clip_progress_max = min(70, clip_progress_max)  # Cap at 70%
                 
-                # Pass detected language from main transcription to clip transcription
-                raw_srt = generate_subtitle_for_clip(raw_path, detected_language)
+                # Pass detected language and progress range to clip transcription
+                raw_srt = generate_subtitle_for_clip(raw_path, detected_language, (clip_progress_min, clip_progress_max))
                 
                 # Apply SRT overrides from GPT (colored words)
                 if viral_data and 'srt_overrides' in viral_data:
@@ -3404,6 +3510,9 @@ def process_video_file(input_path: str, out_dir: str = "tmp", settings: dict = N
     PROGRESS_CALLBACK = progress_callback
     VIDEO_ID = video_id
     IS_SHORT_VIDEO = is_short_video
+    # Reset progress tracking for new video
+    global _LAST_PROGRESS
+    _LAST_PROGRESS = 0
     
     if settings:
         print("\n" + "="*60)
