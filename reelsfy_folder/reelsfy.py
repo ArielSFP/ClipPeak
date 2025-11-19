@@ -490,6 +490,106 @@ def write_srt_entries(entries, srt_path: str, rtl_wrap: bool = True):
                 text = f"\u202b{text}\u202c"
             f.write(f"{i}\n{sec_to_srt_ts(e['start'])} --> {sec_to_srt_ts(e['end'])}\n{text}\n\n")
 
+def trim_video_start_by_first_subtitle(video_path: str, srt_path: str, tolerance: float = 0.15) -> tuple:
+    """
+    Trim video start based on first subtitle timestamp.
+    If first subtitle starts after tolerance (default 0.15s), cut that portion from video
+    and adjust all subtitle timestamps by subtracting the cut time.
+    
+    Args:
+        video_path: Path to input video file
+        srt_path: Path to SRT subtitle file
+        tolerance: Tolerance in seconds - if first subtitle is within this, don't trim (default 0.15)
+    
+    Returns:
+        Tuple (updated_video_path, updated_srt_path) - paths to trimmed video and adjusted SRT
+        If no trimming was needed, returns (video_path, srt_path) unchanged
+    """
+    try:
+        # Parse SRT to get first subtitle start time
+        entries = parse_srt(srt_path)
+        if not entries:
+            # No subtitles, nothing to trim
+            return video_path, srt_path
+        
+        first_subtitle_start = entries[0]['start']
+        
+        # If first subtitle is within tolerance (<= 0.15s), don't trim
+        if first_subtitle_start <= tolerance:
+            return video_path, srt_path
+        
+        # Need to trim - cut from start_time to end
+        cut_time = first_subtitle_start
+        print(f"✂️  Trimming {cut_time:.3f}s from start of video (first subtitle at {cut_time:.3f}s)")
+        
+        # Create temporary output path in same directory
+        video_dir = os.path.dirname(video_path)
+        video_filename = os.path.basename(video_path)
+        base = os.path.splitext(video_filename)[0]
+        ext = os.path.splitext(video_filename)[1]
+        trimmed_video_path = os.path.join(video_dir, f"{base}_trimmed{ext}")
+        
+        # Use ffmpeg to cut video from cut_time to end
+        # -ss skips to start time, -c copy uses stream copy (fast, no re-encoding)
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", str(cut_time),
+            "-i", video_path,
+            "-c", "copy",  # Stream copy (fast, no re-encoding)
+            "-avoid_negative_ts", "make_zero",  # Handle timestamp issues
+            trimmed_video_path
+        ]
+        
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode != 0:
+            print(f"⚠️  Failed to trim video: {result.stderr}")
+            return video_path, srt_path
+        
+        # Validate trimmed video
+        if not validate_video_file(trimmed_video_path):
+            print(f"⚠️  Trimmed video file is invalid, using original")
+            os.remove(trimmed_video_path)
+            return video_path, srt_path
+        
+        # Adjust all subtitle timestamps by subtracting cut_time
+        adjusted_entries = []
+        for entry in entries:
+            adjusted_entries.append({
+                "start": max(0.0, entry['start'] - cut_time),
+                "end": max(0.0, entry['end'] - cut_time),
+                "text": entry['text']
+            })
+        
+        # Remove entries with invalid timestamps (start >= end)
+        adjusted_entries = [e for e in adjusted_entries if e['end'] > e['start']]
+        
+        if not adjusted_entries:
+            print(f"⚠️  No valid subtitles after trimming, using original")
+            os.remove(trimmed_video_path)
+            return video_path, srt_path
+        
+        # Write adjusted SRT
+        write_srt_entries(adjusted_entries, srt_path, rtl_wrap=True)
+        
+        # Replace original video with trimmed version
+        if os.path.exists(video_path):
+            os.remove(video_path)
+        shutil.move(trimmed_video_path, video_path)
+        
+        print(f"✅ Trimmed {cut_time:.3f}s from video start and adjusted subtitle timestamps")
+        return video_path, srt_path
+        
+    except Exception as e:
+        print(f"⚠️  Error trimming video start: {e}")
+        import traceback
+        traceback.print_exc()
+        return video_path, srt_path
+
 def enforce_srt_word_chunks(entries, max_words=5, min_dur=1.0):
     """
     Replace duration-based splitting with word-based splitting:
@@ -3365,6 +3465,10 @@ def main():
                 
                 # Pass detected language and progress range to clip transcription
                 raw_srt = generate_subtitle_for_clip(raw_path, detected_language, (clip_progress_min, clip_progress_max))
+                
+                # Trim video start if first subtitle starts after tolerance (0.15s)
+                # This removes useless silence/no-speech at the beginning
+                raw_path, raw_srt = trim_video_start_by_first_subtitle(raw_path, raw_srt, tolerance=0.15)
                 
                 # Apply SRT overrides from GPT (colored words)
                 if viral_data and 'srt_overrides' in viral_data:
