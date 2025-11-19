@@ -2391,6 +2391,44 @@ def get_sections_of_new_video(silences, duration):
     """
     return [0.0] + silences + [duration]
 
+def silences_to_keep_intervals(silences, duration):
+    """
+    Convert silence periods to keep_intervals format (list of (start, end) tuples).
+    This is the format needed for trim+concat method which preserves sync better.
+    
+    Args:
+        silences: List of timestamps [silence_start1, silence_end1, silence_start2, silence_end2, ...]
+        duration: Total video duration
+    
+    Returns:
+        list: List of (start, end) tuples for segments to keep
+    """
+    if not silences:
+        return [(0.0, duration)]
+    
+    keep_intervals = []
+    prev_end = 0.0
+    
+    # Process silence pairs: [start1, end1, start2, end2, ...]
+    for i in range(0, len(silences), 2):
+        silence_start = silences[i]
+        silence_end = silences[i + 1] if i + 1 < len(silences) else duration
+        
+        # Keep segment from prev_end to silence_start (if there's a gap)
+        if silence_start > prev_end + 0.01:  # At least 10ms gap
+            keep_intervals.append((prev_end, silence_start))
+        
+        prev_end = silence_end
+    
+    # Keep final segment if there's content after last silence
+    if prev_end < duration - 0.01:
+        keep_intervals.append((prev_end, duration))
+    
+    # Filter out invalid intervals
+    keep_intervals = [(s, e) for (s, e) in keep_intervals if e - s > 0.05]
+    
+    return keep_intervals if keep_intervals else [(0.0, duration)]
+
 
 def ffmpeg_filter_get_segment_filter(video_section_timings):
     """Build the between() filter for select/aselect"""
@@ -2410,9 +2448,11 @@ def remove_silence_with_ffmpeg(input_video: str, output_video: str,
                                padding=0.0) -> bool:
     """
     Remove silent parts from video using ffmpeg's silencedetect filter.
-    Uses select/aselect filters for cleaner implementation.
+    Uses trim+concat method which preserves audio-video sync better than select/aselect.
+    The trim+concat method uses PTS-STARTPTS to preserve relative timestamps from the original,
+    avoiding drift issues that can occur with frame/sample rate-based recalculation.
     
-    Based on DarkTrick's silence_cutter implementation.
+    Based on DarkTrick's silence_cutter implementation, improved with sync-preserving method.
     
     Args:
         input_video: Path to input video
@@ -2449,84 +2489,33 @@ def remove_silence_with_ffmpeg(input_video: str, output_video: str,
         # Step 2: Get video duration
         duration = ffprobe_duration(input_video)
         
-        # Step 3: Get sections to keep (non-silent parts)
-        video_sections = get_sections_of_new_video(silences, duration)
+        # Step 3: Convert silences to keep_intervals format for trim+concat method
+        # This method preserves sync better than select/aselect with setpts recalculation
+        keep_intervals = silences_to_keep_intervals(silences, duration)
         
-        # Step 4: Build filter strings
-        segment_filter = ffmpeg_filter_get_segment_filter(video_sections)
-        video_filter = f"select='{segment_filter}', setpts=N/FRAME_RATE/TB"
-        audio_filter = f"aselect='{segment_filter}', asetpts=N/SR/TB"
+        if not keep_intervals:
+            print("   No segments to keep after silence removal, copying original video")
+            shutil.copy2(input_video, output_video)
+            if validate_video_file(output_video):
+                return True
+            else:
+                print(f"❌ Copied video file is invalid: {output_video}")
+                return False
         
-        # Step 5: Try inline filters first (more compatible), fallback to filter scripts
-        print("   Step 2: Removing silence...")
-        has_audio = has_audio_stream(input_video)
+        print(f"   Step 2: Removing silence using trim+concat method (preserves sync)...")
+        print(f"   Keeping {len(keep_intervals)} segment(s)")
         
-        # Try inline filters first
-        if has_audio:
-            command = [
-                "ffmpeg", "-y", "-hwaccel", "cuda", "-i", input_video,
-                "-vf", video_filter,
-                "-af", audio_filter,
-                "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "3M",
-                "-c:a", "aac",
-                output_video
-            ]
-        else:
-            # Video only (no audio)
-            command = [
-                "ffmpeg", "-y", "-hwaccel", "cuda", "-i", input_video,
-                "-vf", video_filter,
-                "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "3M",
-                output_video
-            ]
+        # Step 4: Use trim+concat method instead of select/aselect
+        # This method uses PTS-STARTPTS which preserves relative timestamps
+        # and maintains audio-video sync better than recalculating from frame/sample counts
+        command = build_trim_concat_cmd(input_video, keep_intervals, output_video)
         
         result = run_ffmpeg_with_nvenc_fallback(command, "Removing silence")
         
-        # If inline filters failed, try filter script files as fallback
-        if result.returncode != 0:
-            print("   ⚠️  Inline filters failed, trying filter script files...")
-            import tempfile
-            with tempfile.NamedTemporaryFile(mode="w", encoding="UTF-8", prefix="silence_video_", 
-                                            suffix=".txt", delete=False) as vFile:
-                vFile.write(video_filter)
-                video_filter_file = vFile.name
-            
-            with tempfile.NamedTemporaryFile(mode="w", encoding="UTF-8", prefix="silence_audio_", 
-                                            suffix=".txt", delete=False) as aFile:
-                aFile.write(audio_filter)
-                audio_filter_file = aFile.name
-            
-            try:
-                if has_audio:
-                    command = [
-                        "ffmpeg", "-y", "-hwaccel", "cuda", "-i", input_video,
-                        "-filter_script:v", video_filter_file,
-                        "-filter_script:a", audio_filter_file,
-                        "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "3M",
-                        "-c:a", "aac",
-                        output_video
-                    ]
-                else:
-                    # Video only (no audio)
-                    command = [
-                        "ffmpeg", "-y", "-hwaccel", "cuda", "-i", input_video,
-                        "-filter_script:v", video_filter_file,
-                        "-c:v", "h264_nvenc", "-preset", "p4", "-b:v", "3M",
-                        output_video
-                    ]
-                
-                result = run_ffmpeg_with_nvenc_fallback(command, "Removing silence (fallback)")
-            finally:
-                # Cleanup temp files
-                try:
-                    os.remove(video_filter_file)
-                    os.remove(audio_filter_file)
-                except:
-                    pass
-        
         if result.returncode != 0:
             print(f"❌ FFmpeg failed with return code {result.returncode}")
-            print(f"   stderr: {result.stderr[:500]}")  # First 500 chars of error
+            if result.stderr:
+                print(f"   stderr: {result.stderr[:500]}")  # First 500 chars of error
             return False
         
         if not os.path.exists(output_video):
@@ -2537,6 +2526,22 @@ def remove_silence_with_ffmpeg(input_video: str, output_video: str,
         if not validate_video_file(output_video):
             print(f"❌ Output video file is corrupted or invalid: {output_video}")
             return False
+        
+        # Check audio-video sync after silence removal
+        print("   Checking audio-video sync...")
+        sync_check = check_audio_video_sync(output_video, tolerance_ms=40.0)
+        print(f"   {sync_check['sync_status']}")
+        if sync_check['duration_diff_ms'] > 0.1:
+            print(f"   Video duration: {sync_check['video_duration']:.3f}s")
+            print(f"   Audio duration: {sync_check['audio_duration']:.3f}s")
+            print(f"   Difference: {sync_check['duration_diff_ms']:.2f}ms")
+        if sync_check['warnings']:
+            for warning in sync_check['warnings']:
+                print(f"   ⚠️  {warning}")
+        
+        if not sync_check['in_sync']:
+            print(f"   ⚠️  Warning: Audio-video sync issue detected after silence removal")
+            print(f"   This should be rare with trim+concat method - investigate if persistent")
         
         print(f"✅ Successfully removed silence: {output_video}")
         return True
@@ -2559,6 +2564,139 @@ def ffprobe_duration(path: str) -> float:
         return float(result.stdout.strip())
     except Exception:
         return 0.0
+
+def ffprobe_audio_duration(path: str) -> float:
+    """Get audio stream duration in seconds."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=duration", "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, check=True
+        )
+        duration_str = result.stdout.strip()
+        if duration_str:
+            return float(duration_str)
+    except Exception:
+        pass
+    
+    # Fallback: try format duration
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, check=True
+        )
+        duration_str = result.stdout.strip()
+        if duration_str:
+            return float(duration_str)
+    except Exception:
+        pass
+    
+    return 0.0
+
+def check_audio_video_sync(video_path: str, tolerance_ms: float = 40.0) -> dict:
+    """
+    Check if audio and video are in sync by comparing durations and timestamps.
+    
+    Args:
+        video_path: Path to video file
+        tolerance_ms: Acceptable sync drift in milliseconds (default: 40ms)
+    
+    Returns:
+        dict with:
+            - in_sync: bool - True if within tolerance
+            - video_duration: float - Video stream duration
+            - audio_duration: float - Audio stream duration
+            - duration_diff_ms: float - Difference in milliseconds
+            - sync_status: str - Human-readable status
+            - warnings: list - List of warnings/issues found
+    """
+    if not has_audio_stream(video_path):
+        return {
+            "in_sync": True,
+            "video_duration": 0.0,
+            "audio_duration": 0.0,
+            "duration_diff_ms": 0.0,
+            "sync_status": "No audio stream - N/A",
+            "warnings": []
+        }
+    
+    try:
+        # Get video duration
+        video_duration = ffprobe_duration(video_path)
+        audio_duration = ffprobe_audio_duration(video_path)
+        
+        # Calculate difference
+        duration_diff = abs(video_duration - audio_duration)
+        duration_diff_ms = duration_diff * 1000.0
+        
+        warnings = []
+        in_sync = duration_diff_ms <= tolerance_ms
+        
+        # Additional checks using ffprobe for more detailed analysis
+        try:
+            # Get frame rate and sample rate info
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=r_frame_rate,avg_frame_rate", "-of", "csv=p=0", video_path],
+                capture_output=True, text=True, check=True
+            )
+            frame_rate_info = result.stdout.strip()
+            
+            result = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "a:0",
+                 "-show_entries", "stream=sample_rate", "-of", "csv=p=0", video_path],
+                capture_output=True, text=True, check=True
+            )
+            sample_rate = result.stdout.strip()
+            
+            # Check for variable frame rate
+            if "/" in frame_rate_info and "0/0" not in frame_rate_info:
+                if "avg_frame_rate" in frame_rate_info or "/" in frame_rate_info:
+                    avg_fps_str = frame_rate_info.split(",")[-1] if "," in frame_rate_info else frame_rate_info
+                    if "/" in avg_fps_str:
+                        num, den = map(int, avg_fps_str.split("/"))
+                        if den > 0:
+                            avg_fps = num / den
+                            # VFR detection: if frame rate varies significantly, might indicate issues
+                            if avg_fps < 23 or avg_fps > 30:
+                                warnings.append(f"Unusual average frame rate: {avg_fps:.2f} fps")
+        except Exception:
+            pass
+        
+        # Check for significant duration mismatch
+        if duration_diff_ms > tolerance_ms:
+            warnings.append(f"Duration mismatch: {duration_diff_ms:.2f}ms difference")
+            if duration_diff_ms > 100:
+                warnings.append("⚠️ Significant sync drift detected - may cause visible desync")
+        
+        # Calculate drift per second (if durations are similar)
+        if video_duration > 0 and audio_duration > 0:
+            min_duration = min(video_duration, audio_duration)
+            if min_duration > 1.0:
+                drift_per_second = duration_diff_ms / min_duration
+                if drift_per_second > 10:
+                    warnings.append(f"High drift rate: {drift_per_second:.2f}ms per second")
+        
+        status = "✅ In sync" if in_sync else f"❌ Out of sync ({duration_diff_ms:.2f}ms drift)"
+        
+        return {
+            "in_sync": in_sync,
+            "video_duration": video_duration,
+            "audio_duration": audio_duration,
+            "duration_diff_ms": duration_diff_ms,
+            "sync_status": status,
+            "warnings": warnings
+        }
+    except Exception as e:
+        return {
+            "in_sync": False,
+            "video_duration": 0.0,
+            "audio_duration": 0.0,
+            "duration_diff_ms": 0.0,
+            "sync_status": f"Error checking sync: {e}",
+            "warnings": [f"Could not analyze sync: {e}"]
+        }
 
 def compute_keep_intervals_from_srt(entries, total_duration, min_gap=0.2, pad_after=0.1):
     """
