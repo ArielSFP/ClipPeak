@@ -420,7 +420,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     print("="*60)
     print("▶️  RUNNING: Upload processed results to Supabase Storage (auto-continue mode)\n")
     
-    update_progress(video_id, 85, "מעלה קבצים מעובדים...")
+    update_progress(video_id, 90, "מעלה קבצים מעובדים...")
     print("Uploading files to processed-videos bucket...")
     
     if os.path.exists(content_txt_path):
@@ -462,7 +462,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     print("="*60)
     print("▶️  RUNNING: Prepare database records for shorts (auto-continue mode)\n")
     
-    update_progress(video_id, 90, "מכין רשומות מסד נתונים...")
+    update_progress(video_id, 95, "מכין רשומות מסד נתונים...")
     shorts_to_insert = []
     
     if is_short_video:
@@ -519,8 +519,8 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
         segments = content.get("segments", [])
 
         for i, seg in enumerate(segments):
-            start_time  = str(seg.get("start_time", ""))
-            end_time    = str(seg.get("end_time", ""))
+            segment_start_time  = str(seg.get("start_time", ""))
+            segment_end_time    = str(seg.get("end_time", ""))
             duration    = str(seg.get("duration", ""))
             title       = seg.get("title", None)         # Hebrew
             description = seg.get("description", "")     # Hebrew
@@ -544,8 +544,8 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
                 "filename": final_name,
                 "title": title,
                 "description": description,
-                "start_time": start_time,
-                "end_time": end_time,
+                "start_time": segment_start_time,
+                "end_time": segment_end_time,
                 "duration": duration,
                 "file_url": f"{video_output_dir}/{final_name}",
                 "srt_content": srt_content,  # keep a copy in DB
@@ -663,8 +663,9 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     print("="*60 + "\n")
     
     # Calculate and print total processing time
-    processing_end_time = time.time()
-    total_time = processing_end_time - start_time
+    processing_end_time = float(time.time())
+    start_time_float = float(start_time)
+    total_time = processing_end_time - start_time_float
     minutes = int(total_time // 60)
     seconds = int(total_time % 60)
     

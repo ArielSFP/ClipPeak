@@ -1033,8 +1033,14 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
                     eta_seconds = max(0, int(estimated_total_time - elapsed_time))
                     
                     # Report progress every 5% or every 10 seconds
+                    # Scale transcription progress based on mode
+                    # Short mode: 15-65% (50% range), Regular mode: 15-45% (30% range)
+                    if IS_SHORT_VIDEO:
+                        scaled_progress = 15 + int((progress_pct / 100) * 50)  # 15-65%
+                    else:
+                        scaled_progress = 15 + int((progress_pct / 100) * 30)  # 15-45%
                     if progress_pct % 5 == 0 or elapsed_time % 10 < 1:
-                        report_progress(progress_pct, f"מעתיק... ({progress_pct}%)", eta_seconds)
+                        report_progress(scaled_progress, f"מעתיק... ({progress_pct}%)", eta_seconds)
         
         print(f"📊 Total segments returned: {len(segment_list)}")
         
@@ -2278,8 +2284,13 @@ def transcribe_clip_with_faster_whisper(input_path: str, detected_language: str 
                     eta_seconds = max(0, int(estimated_total_time - elapsed_time))
                     
                     # Report progress every 10% or every 5 seconds
+                    # Clip transcription uses same scaling as main transcription (mode-aware)
+                    if IS_SHORT_VIDEO:
+                        scaled_progress = 15 + int((progress_pct / 100) * 50)  # 15-65%
+                    else:
+                        scaled_progress = 15 + int((progress_pct / 100) * 30)  # 15-45%
                     if progress_pct % 10 == 0 or elapsed_time % 5 < 1:
-                        report_progress(progress_pct, f"מעתיק קליפ... ({progress_pct}%)", eta_seconds)
+                        report_progress(scaled_progress, f"מעתיק קליפ... ({progress_pct}%)", eta_seconds)
         
         # Create word-level SRT file (only SRT we generate - chunking happens in frontend)
         word_entries = create_word_level_srt(segment_list, srt_path)
@@ -2911,6 +2922,11 @@ def main():
         log_stage("Generate transcript using auto_subtitle")
         report_progress(15, "מתמלל סרטון...")
         transcript, detected_language = generate_transcript(src)
+        # Report end of transcription based on mode
+        if IS_SHORT_VIDEO:
+            report_progress(65, "תמלול הושלם")  # Short mode: 15-65%
+        else:
+            report_progress(45, "תמלול הושלם")  # Regular mode: 15-45%
         print(f"Transcript generated (Language: {detected_language})")
     
     else:
@@ -2924,8 +2940,9 @@ def main():
         if IS_SHORT_VIDEO:
             # Short video mode: just get styling (colored words and zoom cues)
             log_stage("Generate short video styling (colored words + zoom)")
-            report_progress(35, "מזהה מילים חשובות...")
+            report_progress(65, "מזהה מילים חשובות...")  # GPT starts at 65% (after transcription ends at 65%)
             print("Short video mode - generating styling, title and description")
+            report_progress(70, "מילים חשובות זוהו")  # GPT ends at 70%
             auto_zoom = PROCESSING_SETTINGS.get('autoZoomIns', True)
             color_hex = PROCESSING_SETTINGS.get('coloredWordsColor', '#FF3B3B')
             styling_data = generate_short_video_styling(transcript, auto_zoom, color_hex)
@@ -2948,23 +2965,24 @@ def main():
                 with open(content_path, 'r', encoding='utf-8') as f:
                     viral_data = json.load(f)
             else:
-                report_progress(35, "מזהה קטעים ויראליים...")
+                report_progress(45, "מזהה קטעים ויראליים...")  # GPT starts at 45% (after transcription ends at 45%)
                 print("No cached content.txt found—calling generate_viral()")
                 viral_data = generate_viral(transcript)
-            with open(content_path, 'w', encoding='utf-8') as f:
-                json.dump(viral_data, f, ensure_ascii=False, indent=2)
+                report_progress(50, "קטעים ויראליים זוהו")  # GPT ends at 50%
+        with open(content_path, 'w', encoding='utf-8') as f:
+            json.dump(viral_data, f, ensure_ascii=False, indent=2)
 
-            if viral_data.get('segments'):
-                adjusted = normalize_clip_segments(
-                    viral_data['segments'],
-                    PROCESSING_SETTINGS.get('minClipLength', 25),
-                    PROCESSING_SETTINGS.get('maxClipLength', 180),
-                    video_duration_seconds
-                )
-                if adjusted:
-                    print("⚖️  Adjusted GPT clip timings to match min/max duration constraints")
-                    with open(content_path, 'w', encoding='utf-8') as f:
-                        json.dump(viral_data, f, ensure_ascii=False, indent=2)
+        if viral_data.get('segments'):
+            adjusted = normalize_clip_segments(
+                viral_data['segments'],
+                PROCESSING_SETTINGS.get('minClipLength', 25),
+                PROCESSING_SETTINGS.get('maxClipLength', 180),
+                video_duration_seconds
+            )
+            if adjusted:
+                print("⚖️  Adjusted GPT clip timings to match min/max duration constraints")
+                with open(content_path, 'w', encoding='utf-8') as f:
+                    json.dump(viral_data, f, ensure_ascii=False, indent=2)
     else:
         # In export mode, we don't need viral_data
         viral_data = None
@@ -3006,7 +3024,7 @@ def main():
             
             # Note: Silence was already removed before transcription (if enabled)
             # Working directly with input_video[_nosilence].mp4
-            report_progress(45, "מכין קליפ יחיד...")
+            report_progress(70, "מכין קליפ יחיד...")
             
             # Use the correct source (either silence-removed or original)
             src_path = os.path.join('tmp', src)
@@ -3031,13 +3049,13 @@ def main():
             # 5. Remove <zoom> tags from SRT -> output_croppedxxx.srt
             # Benefits: Only transcribe once (not twice), more efficient workflow
             log_stage("Extract video segments")
-            report_progress(45, f"מחלץ {len(segments)} קטעים...")
+            report_progress(50, f"מחלץ {len(segments)} קטעים...")
             generate_segments(segments)
             print(f"Extracted {len(segments)} segments")
             
         for i in range(len(segments)):
-            # Calculate progress: 50% to 80% spread across all clips
-            clip_progress = 50 + int((i / len(segments)) * 30)
+            # Calculate progress: 50% to 90% spread across all clips
+            clip_progress = 50 + int((i / len(segments)) * 40)
             report_progress(clip_progress, f"מעבד קליפ {i+1}/{len(segments)}...")
             
             crop  = f"output_croppedwithoutcutting{str(i).zfill(3)}.mp4"
@@ -3121,15 +3139,24 @@ def main():
             
             if IS_SHORT_VIDEO:
                 # Short video mode
+                # Calculate progress: 70% to 90% for short video processing (single clip)
+                # For short videos, we process one clip, so use progressive steps
+                if i == 0:
+                    processing_progress = 75  # Start of processing
+                else:
+                    processing_progress = 70 + int((i / max(1, len(segments))) * 20)  # 70-90% range
+                
                 if is_916_aspect_ratio(raw_path):
                     # Video is already 9:16 - only apply zoom if enabled (no face tracking needed!)
                     if auto_zoom_enabled:
                         log_stage(f"Apply zoom effects to short video")
+                        report_progress(processing_progress, "מחיל אפקטי זום...")
                         print(f"Short video is already 9:16 - applying zoom effects only (no face tracking)")
                         # Use the optimized zoom-only function (much faster than face tracking)
                         apply_zoom_effects_only(raw, nosil, srt_path=raw_srt)
                         print(f"✅ Applied zoom effects to segment {i}")
                     else:
+                        report_progress(processing_progress, "מכין קליפ...")
                         print(f"Short video is already 9:16 - no zoom needed, copying to {nosil}")
                         nosil_path = os.path.join('tmp', nosil)
                         if not os.path.exists(nosil_path):
@@ -3137,6 +3164,7 @@ def main():
                 else:
                     # Short video needs cropping
                     log_stage(f"Crop short video to 9:16 with face tracking and zoom")
+                    report_progress(processing_progress, "חותך ומעבד קליפ...")
                     generate_short(raw, nosil, srt_path=raw_srt)
                     print(f"✅ Cropped short video with face tracking and zoom effects")
                 
@@ -3157,7 +3185,7 @@ def main():
             else:
                 # Regular mode: Crop and finalize
                 log_stage(f"Crop segment {i} to 9:16 aspect ratio with face tracking and zoom")
-                clip_progress = 70 + int((i / len(segments)) * 10)  # 70-80% progress range
+                clip_progress = 70 + int((i / len(segments)) * 20)  # 70-90% progress range
                 report_progress(clip_progress, f"חותך קליפ {i+1}/{len(segments)}...")
             
                 # Crop directly to final output (output_cropped)
