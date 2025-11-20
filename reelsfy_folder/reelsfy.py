@@ -2044,7 +2044,7 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
     SMOOTHING = min(0.95, ease + 0.1)  # Smoothing for stability
     MIN_BOX = 0.30         # min relative width when face tiny
     DEADZONE_PCT = 0.20    # 20% central deadzone (face can move within this without tracking)
-    SMOOTH_FOLLOW_RATE = 0.03  # Smooth following rate when face is outside deadzone (lower = smoother, 0.03 = very smooth)
+    SMOOTH_FOLLOW_RATE = 0.01  # Smooth following rate when face is outside deadzone (lower = smoother, 0.01 = very smooth)
     IOU_THRESHOLD = 0.3    # Minimum IOU to consider faces similar (prevents jumps when same person but different track_id)
     CENTER_DISTANCE_THRESHOLD = 0.15  # Maximum normalized center distance to consider faces similar (15% of frame size)
     SPEAKER_CHANGE_SMOOTH_RATE = 0.25  # Smoothing rate when track_id changes but faces are similar (faster than normal following)
@@ -2111,9 +2111,11 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
         # Find face with highest confidence score (speaking = True and highest raw_score)
         speaking_faces = [f for f in frame_data['faces'] if f.get('speaking', False)]
         if speaking_faces:
+            # Someone in frame is talking - focus on the speaker with highest confidence
             best_face = max(speaking_faces, key=lambda f: f.get('raw_score', 0))
         else:
-            # No one speaking, pick largest face
+            # No one in frame is talking (someone off-frame is talking, or silence will be cut)
+            # Focus on the biggest face in frame
             best_face = max(frame_data['faces'], key=lambda f: (f['x2']-f['x1'])*(f['y2']-f['y1']))
         
         return (best_face['x1'], best_face['y1'], 
@@ -2320,7 +2322,7 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
                     pass
                 else:
                     # Face is outside deadzone - smoothly follow it
-                    # Use very smooth interpolation (SMOOTH_FOLLOW_RATE = 0.08 means 8% movement per frame)
+                    # Use very smooth interpolation (SMOOTH_FOLLOW_RATE = 0.01 means 1% movement per frame)
                     # This creates a gradual, smooth following motion
                     smooth_bbox = ema_bbox(smooth_bbox, target_box, 1.0 - SMOOTH_FOLLOW_RATE)
             else:
