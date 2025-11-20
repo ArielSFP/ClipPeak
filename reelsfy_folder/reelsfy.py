@@ -340,8 +340,16 @@ def print_timing_report():
     
     # Print total
     print("\n" + "="*80)
-    print(f"TOTAL PROCESSING TIME: {format_time(total_time)}")
+    print(f"📊 SUMMARY:")
+    print(f"  Total tracked stages: {len(TIMING_DATA)}")
+    print(f"  Single stages: {len(single_stages)}")
+    print(f"  Repeating stages: {len(repeating_stages)}")
+    print(f"  TOTAL PROCESSING TIME: {format_time(total_time)}")
     print("="*80 + "\n")
+    
+    # If no timing data was collected, warn the user
+    if len(TIMING_DATA) == 0:
+        print("⚠️  WARNING: No timing data was collected. Make sure start_timing() and end_timing() are called for each stage.")
 
 # --- Helper function for stage logging ---
 def log_stage(stage_name: str):
@@ -1164,19 +1172,46 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
         
         video_path = os.path.join('tmp', input_file)
         
-        # Transcribe first 30 seconds to detect language
-        print(f"🔍 LANGUAGE DETECTION: Transcribing video for language detection...")
+        # Extract first 20 seconds of audio for reliable language detection
+        # Using 20 seconds ensures enough speech content even if there's silence at the start
+        print(f"🔍 LANGUAGE DETECTION: Extracting first 20 seconds of audio...")
+        detection_audio_path = os.path.join('tmp', 'language_detection_audio.wav')
+        try:
+            # Extract first 20 seconds using FFmpeg (much faster than transcribing full video)
+            subprocess.run([
+                'ffmpeg', '-y', '-i', video_path,
+                '-t', '20',  # Limit to 20 seconds for reliable language detection
+                '-ar', '16000',  # Sample rate for Whisper
+                '-ac', '1',  # Mono
+                detection_audio_path
+            ], capture_output=True, check=True)
+            print(f"✅ Extracted 20 seconds of audio in ~0.5s")
+        except Exception as e:
+            print(f"⚠️  Failed to extract audio sample: {e}")
+            detection_audio_path = video_path  # Fallback to full video
+        
+        # Transcribe just the 5-second sample for language detection
+        print(f"🔍 LANGUAGE DETECTION: Transcribing audio sample...")
         segments_detect, info = detection_model.transcribe(
-            video_path,
+            detection_audio_path,
             beam_size=1,
             language=None,  # Auto-detect
-            condition_on_previous_text=False
+            condition_on_previous_text=False,
+            vad_filter=False,  # Don't need VAD for short clip
+            word_timestamps=False,  # Don't need word timestamps for language detection
+            temperature=0,  # Deterministic for faster processing
+            initial_prompt=None  # No prompt needed
         )
         
-        # Consume the generator to get language info
-        print(f"🔍 LANGUAGE DETECTION: Consuming segments to extract language info...")
-        segment_list = list(segments_detect)
-        print(f"🔍 LANGUAGE DETECTION: Processed {len(segment_list)} segments for detection")
+        # Consume only first segment to get language info quickly
+        print(f"🔍 LANGUAGE DETECTION: Extracting language info...")
+        first_segment = next(segments_detect, None)
+        # Info is available immediately, don't need to consume all segments
+        if first_segment:
+            segment_list = [first_segment]
+        else:
+            segment_list = []
+        print(f"🔍 LANGUAGE DETECTION: Got language info from first segment")
         
         detected_language = info.language
         language_probability = info.language_probability
@@ -1234,16 +1269,38 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
                 else:
                     raise
         
-        # Transcribe with optimal settings
+        # Transcribe with optimal settings for L4 GPU
         print(f"⏳ Transcribing {input_file}...")
         print(f"   Video path: {video_path}")
         print(f"   Language: {detected_language}")
         print(f"   Device: {device}")
+        if device == "cuda":
+            print(f"   🎮 GPU: Using CUDA for transcription (all chunks processed on GPU)")
+        
+        # chunk_length: Audio chunk size in seconds for processing
+        # - Default is 30 seconds
+        # - For L4 GPU (24GB vRAM): Use 60 seconds for better GPU utilization
+        # - Larger chunks = fewer memory transfers = faster processing on GPU
+        # - L4 can easily handle 60-second chunks with large-v3/turbo models
+        chunk_length = 60 if device == "cuda" else 30
+        
+        # beam_size: Number of beams in beam search algorithm
+        # - beam_size=1: Greedy search (fastest, least accurate)
+        # - beam_size=5: Balanced (default, good accuracy-speed tradeoff)
+        # - beam_size=10+: Better accuracy but 2x+ slower per beam increment
+        # - Each beam represents a hypothesis; beam search explores multiple paths
+        # - beam_size=5 means exploring top 5 possible transcriptions at each step
+        # - We keep beam_size=5 for good accuracy without excessive slowdown
+        beam_size = 5
+        
+        print(f"   📊 Chunk length: {chunk_length}s (optimized for {device.upper()})")
+        print(f"   🔍 Beam size: {beam_size} (balanced accuracy-speed)")
         
         segments, info = model.transcribe(
             video_path,
-            beam_size=5,
+            beam_size=beam_size,
             language=detected_language,
+            chunk_length=chunk_length,  # Larger chunks for better GPU utilization on L4
             vad_filter=True,  # Voice activity detection for better accuracy
             vad_parameters=dict(min_silence_duration_ms=500),
             condition_on_previous_text=True,
@@ -3875,6 +3932,9 @@ def download_logos_from_styling_files(segments):
             print(f"   ❌ Error processing logo for segment {segment_index}: {e}")
     
     print("✅ Logo download check complete")
+    
+    # Print timing report at the end of processing
+    print_timing_report()
 
 # --- Enhanced burn subtitles with styling ---
 def burn_subtitles_with_styling(input_video: str, srt_path: str, output_video: str, short_index: int):
