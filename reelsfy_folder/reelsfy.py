@@ -36,7 +36,7 @@ import io
 import time
 from datetime import datetime
 import unicodedata as ud
-from collections import Counter
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
 import cv2
@@ -64,6 +64,7 @@ PROCESSING_SETTINGS = {
     'numberOfClips': 3,
     'minClipLength': 25,
     'maxClipLength': 180,
+    'wordsPerSegment': 4,  # Default words per subtitle chunk
     'customTopics': [],
     'subscriptionPlan': 'free'
 }
@@ -174,7 +175,21 @@ def initialize_models():
     
     try:
         import sys as system_module
-        print("  🎤 Loading TalkNet model...")
+        import torch
+        
+        # Check for CUDA availability
+        cuda_available = torch.cuda.is_available()
+        device = "cuda" if cuda_available else "cpu"
+        
+        if cuda_available:
+            gpu_name = torch.cuda.get_device_name(0)
+            print(f"  🎮 GPU detected: {gpu_name}")
+            print(f"  📊 CUDA version: {torch.version.cuda}")
+            print(f"  💾 GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+        else:
+            print(f"  ⚠️  CUDA not available - using CPU (much slower)")
+        
+        print(f"  🎤 Loading TalkNet model on {device.upper()}...")
         
         # Use relative paths that work on both Windows and Linux
         TALKNET_DIR = os.path.join("fast-asd", "talknet")
@@ -188,10 +203,38 @@ def initialize_models():
         # Add to path using absolute path for reliability
         talknet_abs_path = os.path.abspath(TALKNET_DIR)
         system_module.path.insert(0, talknet_abs_path)
-        from demoTalkNet import setup
-        GLOBAL_TALKNET, GLOBAL_TALKNET_DET = setup()
+        
+        # Import setup function - but we'll customize device usage
+        from demoTalkNet import initialize_detector
+        from talkNet import talkNet
+        
+        # Initialize face detector with GPU if available
+        print(f"  🔍 Initializing face detector on {device.upper()}...")
+        if cuda_available:
+            GLOBAL_TALKNET_DET = initialize_detector(device='cuda')
+            print(f"  ✅ Face detector loaded on GPU")
+        else:
+            GLOBAL_TALKNET_DET = initialize_detector(device='cpu')
+            print(f"  ⚠️  Face detector loaded on CPU (will be slower)")
+        
+        # Initialize TalkNet model
+        # Note: talkNet() constructor hardcodes .cuda() calls, so it requires CUDA
+        # If CUDA is not available, this will fail - but that's expected since TalkNet needs GPU for reasonable performance
+        print(f"  🎤 Initializing TalkNet model...")
+        if not cuda_available:
+            print(f"  ⚠️  WARNING: TalkNet requires CUDA. Attempting CPU fallback (may fail or be very slow)...")
+        
+        GLOBAL_TALKNET = talkNet()
+        GLOBAL_TALKNET.loadParameters(TALKNET_MODEL)
+        GLOBAL_TALKNET.eval()
+        
+        if cuda_available:
+            print(f"  ✅ TalkNet model loaded on GPU")
+        else:
+            print(f"  ⚠️  TalkNet model on CPU (performance will be severely degraded)")
+        
         print("  ✅ TalkNet loaded successfully")
-        print("✅ Model initialization complete!")
+        print(f"✅ Model initialization complete! (Device: {device.upper()})")
         
     except Exception as e:
         import traceback
@@ -207,13 +250,107 @@ def cleanup_models():
     GLOBAL_TALKNET_DET = None
 
 
+# --- Timing tracking system ---
+TIMING_DATA = defaultdict(list)  # Store timing data for each stage
+STAGE_START_TIME = {}  # Track start time for current stage
+
+def start_timing(stage_name: str):
+    """Start timing for a stage."""
+    STAGE_START_TIME[stage_name] = time.time()
+
+def end_timing(stage_name: str):
+    """End timing for a stage and record it."""
+    if stage_name in STAGE_START_TIME:
+        elapsed = time.time() - STAGE_START_TIME[stage_name]
+        TIMING_DATA[stage_name].append(elapsed)
+        del STAGE_START_TIME[stage_name]
+        return elapsed
+    return 0
+
+def get_timing_stats(stage_name: str):
+    """Get statistics for a stage (average and std dev if multiple measurements)."""
+    if stage_name not in TIMING_DATA or not TIMING_DATA[stage_name]:
+        return None
+    times = TIMING_DATA[stage_name]
+    if len(times) == 1:
+        return {"avg": times[0], "std": 0, "count": 1}
+    try:
+        from statistics import mean, stdev
+        return {"avg": mean(times), "std": stdev(times), "count": len(times)}
+    except:
+        # Fallback if statistics module not available
+        avg = sum(times) / len(times)
+        variance = sum((x - avg) ** 2 for x in times) / len(times)
+        std = variance ** 0.5
+        return {"avg": avg, "std": std, "count": len(times)}
+
+def format_time(seconds: float) -> str:
+    """Format time in seconds to human-readable string."""
+    if seconds < 60:
+        return f"{seconds:.2f}s"
+    minutes = int(seconds // 60)
+    secs = seconds % 60
+    if minutes < 60:
+        return f"{minutes}m {secs:.2f}s"
+    hours = int(minutes // 60)
+    mins = minutes % 60
+    return f"{hours}h {mins}m {secs:.2f}s"
+
+def print_timing_report():
+    """Print comprehensive timing report at the end of processing."""
+    print("\n" + "="*80)
+    print("TIMING REPORT")
+    print("="*80)
+    
+    total_time = 0
+    single_stages = []
+    repeating_stages = []
+    
+    # Separate single and repeating stages
+    for stage_name in sorted(TIMING_DATA.keys()):
+        times = TIMING_DATA[stage_name]
+        if len(times) == 1:
+            single_stages.append((stage_name, times[0]))
+            total_time += times[0]
+        else:
+            repeating_stages.append(stage_name)
+    
+    # Print single stages
+    if single_stages:
+        print("\n📊 SINGLE STAGES:")
+        print("-" * 80)
+        for stage_name, elapsed in single_stages:
+            print(f"  {stage_name:.<60} {format_time(elapsed)}")
+    
+    # Print repeating stages with statistics
+    if repeating_stages:
+        print("\n📈 REPEATING STAGES (with statistics):")
+        print("-" * 80)
+        for stage_name in repeating_stages:
+            stats = get_timing_stats(stage_name)
+            if stats:
+                print(f"  {stage_name}:")
+                print(f"    Count: {stats['count']}")
+                print(f"    Average: {format_time(stats['avg'])}")
+                print(f"    Std Dev: {format_time(stats['std'])}")
+                print(f"    Total: {format_time(sum(TIMING_DATA[stage_name]))}")
+                total_time += sum(TIMING_DATA[stage_name])
+                # Print individual times
+                print(f"    Individual times: {[format_time(t) for t in TIMING_DATA[stage_name]]}")
+    
+    # Print total
+    print("\n" + "="*80)
+    print(f"TOTAL PROCESSING TIME: {format_time(total_time)}")
+    print("="*80 + "\n")
+
 # --- Helper function for stage logging ---
 def log_stage(stage_name: str):
-    """Log the current processing stage."""
+    """Log the current processing stage and start timing."""
     print(f"\n{'='*60}")
     print(f"STAGE: {stage_name}")
     print(f"{'='*60}")
     print(f"▶️  RUNNING: {stage_name} (auto-continue mode)\n")
+    start_timing(stage_name)
 
 # --- Utility: time conversions ---
 def to_seconds(value):
@@ -659,7 +796,7 @@ def enforce_srt_word_chunks(entries, max_words=5, min_dur=1.0):
 
     return out
 
-def chunk_segments_with_word_timestamps(segment_list, max_words=6):
+def chunk_segments_with_word_timestamps(segment_list, max_words=4):
     """
     Convert Whisper segments (with word timestamps) into subtitle entries capped at max_words each.
     Falls back to whole-segment timing if per-word timestamps are missing.
@@ -1850,7 +1987,7 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
     SMOOTHING = min(0.95, ease + 0.1)  # Smoothing for stability
     MIN_BOX = 0.30         # min relative width when face tiny
     DEADZONE_PCT = 0.20    # 20% central deadzone (face can move within this without tracking)
-    SMOOTH_FOLLOW_RATE = 0.08  # Smooth following rate when face is outside deadzone (lower = smoother, 0.08 = very smooth)
+    SMOOTH_FOLLOW_RATE = 0.03  # Smooth following rate when face is outside deadzone (lower = smoother, 0.03 = very smooth)
     IOU_THRESHOLD = 0.3    # Minimum IOU to consider faces similar (prevents jumps when same person but different track_id)
     CENTER_DISTANCE_THRESHOLD = 0.15  # Maximum normalized center distance to consider faces similar (15% of frame size)
     SPEAKER_CHANGE_SMOOTH_RATE = 0.25  # Smoothing rate when track_id changes but faces are similar (faster than normal following)
@@ -3207,6 +3344,7 @@ def main():
         else:
             shutil.copy2(args.file, os.path.join('tmp', src))
         print(f"Input video ready: {src}")
+        end_timing("Download or copy input video")
 
         # For SHORT VIDEO MODE: Remove silence BEFORE transcription
         if IS_SHORT_VIDEO:
@@ -3236,10 +3374,12 @@ def main():
                         print(f"✅ Using silence-removed video for transcription: {src}")
                     else:
                         print(f"⚠️  Continuing with original video")
+                    end_timing("Remove silence from short video (before transcription)")
                 else:
                     # Use existing silence-removed video
                     src = 'input_video_nosilence.mp4'
                     print(f"✅ Using existing silence-removed video")
+                    end_timing("Remove silence from short video (before transcription)")
             else:
                 print("⏭️  Auto-cuts disabled - skipping silence removal for short video")
 
@@ -3264,6 +3404,7 @@ def main():
         else:
             report_progress(0, "מתמלל סרטון...")  # Normal mode: start at 0%
         transcript, detected_language = generate_transcript(src)
+        end_timing("Generate transcript using auto_subtitle")
         # Report end of transcription based on mode
         if IS_SHORT_VIDEO:
             report_progress(65, "תמלול הושלם")  # Short mode: 15-65%
@@ -3284,10 +3425,11 @@ def main():
             log_stage("Generate short video styling (colored words + zoom)")
             report_progress(65, "מזהה מילים חשובות...")  # GPT starts at 65% (after transcription ends at 65%)
             print("Short video mode - generating styling, title and description")
-            report_progress(70, "מילים חשובות זוהו")  # GPT ends at 70%
             auto_zoom = PROCESSING_SETTINGS.get('autoZoomIns', True)
             color_hex = PROCESSING_SETTINGS.get('coloredWordsColor', '#FF3B3B')
             styling_data = generate_short_video_styling(transcript, auto_zoom, color_hex)
+            end_timing("Generate short video styling (colored words + zoom)")
+            report_progress(70, "מילים חשובות זוהו")  # GPT ends at 70%
             viral_data = {
                 "segments": [],
                 "srt_overrides": styling_data.get("srt_overrides", {}),
@@ -3393,6 +3535,7 @@ def main():
             log_stage("Extract video segments")
             report_progress(52, f"מחלץ {len(segments)} קטעים...")
             generate_segments(segments)
+            end_timing("Extract video segments")
             print(f"Extracted {len(segments)} segments")
             
         for i in range(len(segments)):
@@ -3428,7 +3571,7 @@ def main():
                 
                 # STEP 1: Remove silence from extracted segment (if enabled)
                 if auto_cuts_enabled:
-                    log_stage(f"Remove silence from segment {i}")
+                    start_timing(f"Remove silence from clip {i}")
                     clip_progress = 52 + int((i / len(segments)) * 8)  # 50-60% progress range
                     report_progress(clip_progress, f"מסיר דממות מקליפ {i+1}/{len(segments)}...")
                     
@@ -3441,6 +3584,7 @@ def main():
                         # Using DarkTrick's proven defaults: -30dB, 1.0s
                     )
                     
+                    end_timing(f"Remove silence from clip {i}")
                     if success:
                         # Validate the output file before using it
                         if validate_video_file(raw_nosilence_path):
@@ -3457,7 +3601,7 @@ def main():
                     print(f"⏭️  Skipping silence removal for segment {i}")
                 
                 # STEP 2: Generate subtitles for the segment (after silence removal)
-                log_stage(f"Generate subtitles for segment {i}")
+                start_timing(f"Retranscribe clip {i}")
                 # Progress range for clip transcription: 60-70% (reported internally by generate_subtitle_for_clip)
                 clip_progress_min = 60 + int((i / len(segments)) * 10)  # Start of range for this clip
                 clip_progress_max = 60 + int(((i + 1) / len(segments)) * 10)  # End of range for this clip
@@ -3465,6 +3609,7 @@ def main():
                 
                 # Pass detected language and progress range to clip transcription
                 raw_srt = generate_subtitle_for_clip(raw_path, detected_language, (clip_progress_min, clip_progress_max))
+                end_timing(f"Retranscribe clip {i}")
                 
                 # Trim video start if first subtitle starts after tolerance (0.15s)
                 # This removes useless silence/no-speech at the beginning
@@ -3498,11 +3643,12 @@ def main():
                 if is_916_aspect_ratio(raw_path):
                     # Video is already 9:16 - only apply zoom if enabled (no face tracking needed!)
                     if auto_zoom_enabled:
-                        log_stage(f"Apply zoom effects to short video")
+                        start_timing(f"Apply zoom effects to short video")
                         report_progress(processing_progress, "מחיל אפקטי זום...")
                         print(f"Short video is already 9:16 - applying zoom effects only (no face tracking)")
                         # Use the optimized zoom-only function (much faster than face tracking)
                         apply_zoom_effects_only(raw, nosil, srt_path=raw_srt)
+                        end_timing(f"Apply zoom effects to short video")
                         print(f"✅ Applied zoom effects to segment {i}")
                     else:
                         report_progress(processing_progress, "מכין קליפ...")
@@ -3512,9 +3658,10 @@ def main():
                             shutil.copy2(raw_path, nosil_path)
                 else:
                     # Short video needs cropping
-                    log_stage(f"Crop short video to 9:16 with face tracking and zoom")
+                    start_timing(f"Face tracking + crop short video")
                     report_progress(processing_progress, "חותך ומעבד קליפ...")
                     generate_short(raw, nosil, srt_path=raw_srt)
+                    end_timing(f"Face tracking + crop short video")
                     print(f"✅ Cropped short video with face tracking and zoom effects")
                 
                 # For short videos, copy and clean the SRT
@@ -3533,12 +3680,13 @@ def main():
                     print(f"✅ Finalized SRT with accurate timestamps")
             else:
                 # Regular mode: Crop and finalize
-                log_stage(f"Crop segment {i} to 9:16 aspect ratio with face tracking and zoom")
+                start_timing(f"Face tracking + crop clip {i}")
                 clip_progress = 70 + int((i / len(segments)) * 20)  # 70-90% progress range
                 report_progress(clip_progress, f"חותך קליפ {i+1}/{len(segments)}...")
             
                 # Crop directly to final output (output_cropped)
                 generate_short(raw, nosil, srt_path=raw_srt)
+                end_timing(f"Face tracking + crop clip {i}")
                 print(f"✅ Cropped segment {i} with face tracking and zoom effects")
                 
                 # Create final SRT by copying and removing <zoom> tags
@@ -3584,6 +3732,9 @@ def main():
                     print(f"Warning: SRT file not found: {srt_path}")
             else:
                 print(f"Warning: Input video file not found: {nosil_path}")
+        
+        # Print timing report at the end
+        print_timing_report()
 
 def process_video_file(input_path: str, out_dir: str = "tmp", settings: dict = None, video_id: str = None, progress_callback=None, is_short_video: bool = False):
     """
@@ -3932,8 +4083,11 @@ def burn_subtitles_with_styling(input_video: str, srt_path: str, output_video: s
     
     # Step 4: Apply animation effects per subtitle
     # Check individual formatting first, then fall back to global
+    # Apply animations with easing enabled for smoother GSAP-like curves
+    # Note: Easing creates longer ASS tags (~10 keyframes per animation) but provides smoother animations
     srt_content = apply_animations_to_srt(srt_content, individual_formatting, text_formatting, 
-                                         x_pct, y_pct, w_pct, h_pct, video_width, video_height)
+                                         x_pct, y_pct, w_pct, h_pct, video_width, video_height,
+                                         use_easing=True)
     
     # Step 5: Convert to ASS format for better control
     ass_path = f"tmp/subtitles_{short_index:03}.ass"
@@ -4284,9 +4438,132 @@ def convert_color_tags_to_ass(srt_content: str) -> str:
     
     return converted
 
+def ease_power2_out(t: float) -> float:
+    """
+    GSAP power2.out easing function.
+    Fast start, slow end.
+    Formula: 1 - (1 - t)^2
+    """
+    return 1 - (1 - t) ** 2
+
+def ease_power3_out(t: float) -> float:
+    """
+    GSAP power3.out easing function.
+    Fast start, very slow end.
+    Formula: 1 - (1 - t)^3
+    """
+    return 1 - (1 - t) ** 3
+
+def ease_back_out(t: float, overshoot: float = 1.6) -> float:
+    """
+    GSAP back.out easing function.
+    Overshoots then settles.
+    Formula: 1 - ((1 - t)^3) * ((overshoot + 1) * (1 - t) - overshoot)
+    """
+    c1 = overshoot + 1
+    return 1 + (c1 * ((t - 1) ** 3)) + (overshoot * ((t - 1) ** 2))
+
+def ease_power2_in_out(t: float) -> float:
+    """
+    GSAP power2.inOut easing function.
+    Slow start, fast middle, slow end.
+    Formula: t < 0.5 ? 0.5 * (2t)^2 : 1 - 0.5 * (2 - 2t)^2
+    """
+    if t < 0.5:
+        return 0.5 * ((2 * t) ** 2)
+    else:
+        return 1 - 0.5 * ((2 - 2 * t) ** 2)
+
+def generate_easing_keyframes(start_value: float, end_value: float, duration_ms: int, 
+                               easing_func, num_keyframes: int = 10) -> list:
+    """
+    Generate keyframes for easing animation.
+    
+    Args:
+        start_value: Starting value (e.g., opacity 0, scale 0.8)
+        end_value: Ending value (e.g., opacity 1, scale 1.0)
+        duration_ms: Duration in milliseconds
+        easing_func: Easing function (e.g., ease_power2_out)
+        num_keyframes: Number of keyframes to generate (more = smoother but longer ASS tags)
+    
+    Returns:
+        List of tuples: [(time_ms, value), ...]
+    """
+    keyframes = []
+    value_range = end_value - start_value
+    
+    for i in range(num_keyframes + 1):
+        # Normalized time (0.0 to 1.0)
+        t = i / num_keyframes
+        # Apply easing function
+        eased_t = easing_func(t)
+        # Calculate value at this point
+        value = start_value + (value_range * eased_t)
+        # Calculate time in milliseconds
+        time_ms = int((i / num_keyframes) * duration_ms)
+        keyframes.append((time_ms, value))
+    
+    return keyframes
+
+def build_ass_transform_tags(keyframes: list, transform_type: str) -> str:
+    """
+    Build ASS transform tags (\t) from keyframes.
+    
+    Args:
+        keyframes: List of (time_ms, value) tuples
+        transform_type: Type of transform ('alpha', 'scale_x', 'scale_y', 'x', 'y')
+    
+    Returns:
+        ASS transform tags string
+    """
+    if not keyframes:
+        return ""
+    
+    tags = []
+    
+    # Set initial value
+    initial_time, initial_value = keyframes[0]
+    if initial_time > 0:
+        # Only set initial if not at 0
+        if transform_type == 'alpha':
+            # ASS alpha: &H00FFFFFF where FF = opaque, 00 = transparent
+            alpha_hex = int(255 * initial_value)
+            tags.append(f"\\alpha&H{255 - alpha_hex:02X}")
+        elif transform_type == 'scale_x':
+            tags.append(f"\\fscx{int(initial_value * 100)}")
+        elif transform_type == 'scale_y':
+            tags.append(f"\\fscy{int(initial_value * 100)}")
+        elif transform_type == 'x':
+            tags.append(f"\\pos({int(initial_value)},0)")  # y will be set separately
+        elif transform_type == 'y':
+            tags.append(f"\\pos(0,{int(initial_value)})")  # x will be set separately
+    
+    # Add transform tags for each keyframe transition
+    for i in range(len(keyframes) - 1):
+        start_time, start_value = keyframes[i]
+        end_time, end_value = keyframes[i + 1]
+        
+        if start_time == end_time:
+            continue
+        
+        if transform_type == 'alpha':
+            start_alpha = int(255 * start_value)
+            end_alpha = int(255 * end_value)
+            tags.append(f"\\t({start_time},{end_time},\\alpha&H{255 - end_alpha:02X})")
+        elif transform_type == 'scale_x':
+            tags.append(f"\\t({start_time},{end_time},\\fscx{int(end_value * 100)})")
+        elif transform_type == 'scale_y':
+            tags.append(f"\\t({start_time},{end_time},\\fscy{int(end_value * 100)})")
+        elif transform_type == 'x':
+            tags.append(f"\\t({start_time},{end_time},\\pos({int(end_value)},0))")
+        elif transform_type == 'y':
+            tags.append(f"\\t({start_time},{end_time},\\pos(0,{int(end_value)}))")
+    
+    return ''.join(tags)
+
 def apply_animations_to_srt(srt_content: str, individual_formatting: dict, global_formatting: dict,
                            x_pct: float, y_pct: float, w_pct: float, h_pct: float,
-                           video_width: int, video_height: int) -> str:
+                           video_width: int, video_height: int, use_easing: bool = False) -> str:
     """
     Apply animation effects to SRT content, checking individual formatting first, then global.
     
@@ -4327,34 +4604,117 @@ def apply_animations_to_srt(srt_content: str, individual_formatting: dict, globa
     
     # Helper function to generate animation ASS tags
     def get_animation_tags(animation: str, line: str) -> str:
-        """Generate ASS animation tags based on animation type."""
+        """Generate ASS animation tags based on animation type.
+        
+        Animations match the website implementation:
+        - הופעה: fade in (opacity 0→1) over 600ms with power2.out easing
+        - החלקה: slide up (y: 50→0) + fade (opacity 0→1) over 600ms with power2.out easing
+        - זום אין: zoom in (opacity 0→1, scale 0.8→1) over 600ms with back.out(1.6) easing
+        - פופ-אפ: pop-up (opacity 0→1, scale 0.6→1.08 over 280ms, then scale 1.08→1 over 180ms)
+                   with power3.out and power2.inOut easing
+        
+        If use_easing is True, generates keyframes to approximate GSAP easing curves.
+        Otherwise, uses linear interpolation (default for compatibility).
+        """
         if animation == 'ללא' or not animation:
             return line
         
-        if animation == 'הופעה':  # fade in
-            # Fade in: opacity 0 → 1 over 600ms
-            return f"{{\\fad(600,0)}}{line}"
-        
-        elif animation == 'החלקה':  # slide up + fade
-            # Calculate position for move animation
-            actual_y = int((y_pct / 100) * video_height)
-            actual_x = int((x_pct / 100) * video_width)
-            final_x = actual_x
-            final_y = actual_y
-            start_y = min(final_y + 50, video_height - 20)
-            start_x = final_x
-            return f"{{\\fad(600,0)\\move({start_x},{start_y},{final_x},{final_y},0,600)}}{line}"
-        
-        elif animation == 'פופ-אפ':  # popup - scale from small with bounce
-            # Scale 60% → 108% → 100% with overshoot
-            return f"{{\\fad(100,0)\\t(0,280,\\fscx108\\fscy108)\\t(280,460,\\fscx100\\fscy100)}}{line}"
-        
-        elif animation == 'זום אין':  # zoom-in - scale from 80% to 100%
-            # Scale from 80% to 100% over 600ms
-            return f"{{\\fad(100,0)\\fscx80\\fscy80\\t(0,600,\\fscx100\\fscy100)}}{line}"
-        
+        if use_easing:
+            # Use easing curves for smoother animations (longer ASS tags)
+            num_keyframes = 10  # More keyframes = smoother but longer tags
+            
+            if animation == 'הופעה':  # fade in with power2.out
+                keyframes = generate_easing_keyframes(0, 1, 600, ease_power2_out, num_keyframes)
+                alpha_tags = build_ass_transform_tags(keyframes, 'alpha')
+                return f"{{\\alpha&HFF{alpha_tags}}}{line}"
+            
+            elif animation == 'החלקה':  # slide up + fade with power2.out
+                actual_y = int((y_pct / 100) * video_height)
+                actual_x = int((x_pct / 100) * video_width)
+                final_x = actual_x
+                final_y = actual_y
+                start_y = min(final_y + 50, video_height - 20)
+                start_x = final_x
+                
+                # Generate eased keyframes for opacity and position
+                alpha_keyframes = generate_easing_keyframes(0, 1, 600, ease_power2_out, num_keyframes)
+                y_keyframes = generate_easing_keyframes(start_y, final_y, 600, ease_power2_out, num_keyframes)
+                
+                alpha_tags = build_ass_transform_tags(alpha_keyframes, 'alpha')
+                # Build move tags with eased positions
+                move_tags = []
+                for i in range(len(y_keyframes) - 1):
+                    start_time, start_y_val = y_keyframes[i]
+                    end_time, end_y_val = y_keyframes[i + 1]
+                    if start_time == end_time:
+                        continue
+                    move_tags.append(f"\\t({start_time},{end_time},\\move({start_x},{int(start_y_val)},{final_x},{int(end_y_val)}))")
+                
+                move_str = ''.join(move_tags)
+                return f"{{\\alpha&HFF{alpha_tags}\\move({start_x},{start_y},{final_x},{final_y}){move_str}}}{line}"
+            
+            elif animation == 'זום אין':  # zoom-in with back.out(1.6)
+                # Generate eased keyframes for opacity and scale
+                alpha_keyframes = generate_easing_keyframes(0, 1, 600, ease_power2_out, num_keyframes)
+                scale_keyframes = generate_easing_keyframes(0.8, 1.0, 600, lambda t: ease_back_out(t, 1.6), num_keyframes)
+                
+                alpha_tags = build_ass_transform_tags(alpha_keyframes, 'alpha')
+                scale_x_tags = build_ass_transform_tags(scale_keyframes, 'scale_x')
+                scale_y_tags = build_ass_transform_tags(scale_keyframes, 'scale_y')
+                
+                return f"{{\\alpha&HFF{alpha_tags}\\fscx80\\fscy80{scale_x_tags}{scale_y_tags}}}{line}"
+            
+            elif animation == 'פופ-אפ':  # pop-up with power3.out and power2.inOut
+                # First part: scale 0.6 → 1.08 over 280ms with power3.out
+                alpha_keyframes_1 = generate_easing_keyframes(0, 1, 280, ease_power3_out, 8)
+                scale_keyframes_1 = generate_easing_keyframes(0.6, 1.08, 280, ease_power3_out, 8)
+                
+                # Second part: scale 1.08 → 1.0 over 180ms with power2.inOut
+                scale_keyframes_2 = generate_easing_keyframes(1.08, 1.0, 180, ease_power2_in_out, 6)
+                # Adjust times for second part (starts at 280ms)
+                scale_keyframes_2 = [(time_ms + 280, value) for time_ms, value in scale_keyframes_2]
+                
+                alpha_tags_1 = build_ass_transform_tags(alpha_keyframes_1, 'alpha')
+                scale_x_tags_1 = build_ass_transform_tags(scale_keyframes_1, 'scale_x')
+                scale_y_tags_1 = build_ass_transform_tags(scale_keyframes_1, 'scale_y')
+                scale_x_tags_2 = build_ass_transform_tags(scale_keyframes_2, 'scale_x')
+                scale_y_tags_2 = build_ass_transform_tags(scale_keyframes_2, 'scale_y')
+                
+                return f"{{\\alpha&HFF{alpha_tags_1}\\fscx60\\fscy60{scale_x_tags_1}{scale_y_tags_1}{scale_x_tags_2}{scale_y_tags_2}}}{line}"
         else:
-            return line
+            # Use linear interpolation (default, simpler ASS tags)
+            if animation == 'הופעה':  # fade in
+                # Fade in: opacity 0 → 1 over 600ms (matches website: duration 0.6s)
+                return f"{{\\fad(600,0)}}{line}"
+            
+            elif animation == 'החלקה':  # slide up + fade
+                # Slide up: y moves 50px down → 0, opacity 0 → 1, over 600ms
+                # (matches website: opacity 0→1, y: 50→0, duration 0.6s)
+                # Calculate final position (center of textbox)
+                actual_y = int((y_pct / 100) * video_height)
+                actual_x = int((x_pct / 100) * video_width)
+                final_x = actual_x
+                final_y = actual_y
+                # Start 50px below final position (slide up means starting lower, moving upward)
+                start_y = min(final_y + 50, video_height - 20)
+                start_x = final_x
+                # Fade in 600ms + move over 600ms (both happen simultaneously)
+                return f"{{\\fad(600,0)\\move({start_x},{start_y},{final_x},{final_y},0,600)}}{line}"
+            
+            elif animation == 'זום אין':  # zoom-in
+                # Zoom in: opacity 0 → 1, scale 80% → 100% over 600ms
+                # (matches website: opacity 0→1, scale 0.8→1, duration 0.6s)
+                # Fade in 600ms + scale animation over 600ms
+                return f"{{\\fad(600,0)\\fscx80\\fscy80\\t(0,600,\\fscx100\\fscy100)}}{line}"
+            
+            elif animation == 'פופ-אפ':  # pop-up
+                # Pop-up: opacity 0 → 1, scale 60% → 108% over 280ms, then scale 108% → 100% over 180ms
+                # (matches website: opacity 0→1, scale 0.6→1.08 over 0.28s, then scale 1.08→1 over 0.18s)
+                # Total duration: 460ms (280ms + 180ms)
+                # Fade in over full 460ms duration to ensure smooth opacity transition
+                return f"{{\\fad(460,0)\\fscx60\\fscy60\\t(0,280,\\fscx108\\fscy108)\\t(280,460,\\fscx100\\fscy100)}}{line}"
+        
+        return line
     
     # Apply animation per entry
     for i, entry in enumerate(entries):
@@ -4558,15 +4918,24 @@ def apply_animation_to_srt(srt_path: str, animation: str) -> str:
         elif '-->' in line:  # Timestamp
             result_lines.append(line)
         elif line:  # Subtitle text
-            # Apply animation based on type
+            # Apply animation based on type (matching website implementation)
+            # Note: This function doesn't have position/size info, so some animations use simplified versions
             if animation == 'הופעה':  # fade in
-                animated_text = f"{{\\fad(200,0)}}{line}"
-            elif animation == 'החלקה':  # slide up
-                animated_text = f"{{\\move(0,400,0,0,0,350)}}{line}"
-            elif animation == 'פופ-אפ':  # popup
-                animated_text = f"{{\\fscx70\\fscy70\\t(0,350,\\fscx100\\fscy100)}}{line}"
+                # Fade in: opacity 0 → 1 over 600ms (matches website: duration 0.6s)
+                animated_text = f"{{\\fad(600,0)}}{line}"
+            elif animation == 'החלקה':  # slide up + fade
+                # Slide up + fade: opacity 0 → 1, y: 50→0 over 600ms
+                # Simplified: use move animation (exact position requires video dimensions)
+                # Note: For full implementation, use apply_animations_to_srt() with position info
+                animated_text = f"{{\\fad(600,0)\\move(0,50,0,0,0,600)}}{line}"
+            elif animation == 'פופ-אפ':  # pop-up
+                # Pop-up: opacity 0 → 1, scale 60% → 108% over 280ms, then scale 108% → 100% over 180ms
+                # (matches website: scale 0.6→1.08 over 0.28s, then scale 1.08→1 over 0.18s)
+                animated_text = f"{{\\fad(460,0)\\fscx60\\fscy60\\t(0,280,\\fscx108\\fscy108)\\t(280,460,\\fscx100\\fscy100)}}{line}"
             elif animation == 'זום אין':  # zoom-in
-                animated_text = f"{{\\fscx90\\fscy90\\t(0,350,\\fscx100\\fscy100)}}{line}"
+                # Zoom in: opacity 0 → 1, scale 80% → 100% over 600ms
+                # (matches website: opacity 0→1, scale 0.8→1, duration 0.6s)
+                animated_text = f"{{\\fad(600,0)\\fscx80\\fscy80\\t(0,600,\\fscx100\\fscy100)}}{line}"
             else:
                 animated_text = line
             

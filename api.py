@@ -152,6 +152,7 @@ async def process_video(payload: dict, background_tasks: BackgroundTasks):
         print(f"   Auto Cuts: {settings.get('autoCuts')}")
         print(f"   Number of Clips: {settings.get('numberOfClips')}")
         print(f"   Clip Length Range: {settings.get('minClipLength')}-{settings.get('maxClipLength')}s")
+        print(f"   Words Per Segment: {settings.get('wordsPerSegment', 4)}")
         print(f"   Custom Topics: {len(settings.get('customTopics', []))} topics")
     
     if export_mode:
@@ -347,7 +348,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     print("="*60)
     print("▶️  RUNNING: Download original video from Supabase Storage (auto-continue mode)\n")
     
-    update_progress(video_id, 5, "מוריד סרטון מקורי...")
+    update_progress(video_id, 0, "מוריד סרטון מקורי...")
     local_in = os.path.basename(file_key)
     data = supabase.storage.from_(bucket).download(file_key)
     if isinstance(data, bytes):
@@ -365,7 +366,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     print("="*60)
     print("▶️  RUNNING: Process video with reelsfy (auto-continue mode)\n")
     
-    update_progress(video_id, 10, "מתחיל עיבוד ראשוני...")
+    update_progress(video_id, 0, "מתחיל עיבוד ראשוני...")
     
     # Use explicit is_short_video flag from frontend (already passed to this function)
     print(f"Short video mode: {is_short_video}")
@@ -576,11 +577,16 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     print("▶️  RUNNING: Update video status to completed (auto-continue mode)\n")
     
     update_progress(video_id, 100, "הושלם!")
+    # Store processing settings in video metadata (including wordsPerSegment)
+    video_metadata = {
+        "wordsPerSegment": settings.get('wordsPerSegment', 4) if settings else 4
+    }
     supabase.table("videos").update({
         "status": "completed",
-        "progress": 100
+        "progress": 100,
+        "metadata": video_metadata
     }).eq("file_url", file_key).execute()
-    print(f"Updated video status to completed")
+    print(f"Updated video status to completed with metadata (wordsPerSegment: {video_metadata.get('wordsPerSegment', 4)})")
     
     # 7) Cleanup temporary files
     print("\n" + "="*60)
