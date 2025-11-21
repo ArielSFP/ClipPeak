@@ -82,6 +82,9 @@ SKIP_MODE = False  # Global skip mode - if True, auto-continue all stages
 GLOBAL_TALKNET = None
 GLOBAL_TALKNET_DET = None
 
+# Global variable for request-specific results directory (for isolation)
+REQUEST_RESULTS_DIR = None
+
 # Global variable to track last reported progress (prevents backward jumps)
 _LAST_PROGRESS = 0
 
@@ -3378,8 +3381,13 @@ def main():
 
     # determine a results folder key
     if not args.export_mode:
-        key = args.video_id if args.video_id else os.path.splitext(os.path.basename(args.file))[0]
-        results_dir = os.path.join('results', key)
+        # Use provided results_dir if available (for request isolation), otherwise create default
+        # Check if REQUEST_RESULTS_DIR was set by process_video_file()
+        if 'REQUEST_RESULTS_DIR' in globals() and REQUEST_RESULTS_DIR:
+            results_dir = REQUEST_RESULTS_DIR
+        elif not results_dir:
+            key = args.video_id if args.video_id else os.path.splitext(os.path.basename(args.file))[0]
+            results_dir = os.path.join('results', key)
         os.makedirs(results_dir, exist_ok=True)
         content_path = os.path.join(results_dir, 'content.txt')
         print(content_path)
@@ -3795,7 +3803,7 @@ def main():
         # Print timing report at the end
         print_timing_report()
 
-def process_video_file(input_path: str, out_dir: str = "tmp", settings: dict = None, video_id: str = None, progress_callback=None, is_short_video: bool = False):
+def process_video_file(input_path: str, out_dir: str = "tmp", settings: dict = None, video_id: str = None, progress_callback=None, is_short_video: bool = False, results_dir: str = None):
     """
     Process video file with optional custom settings from frontend.
     
@@ -3851,6 +3859,10 @@ def process_video_file(input_path: str, out_dir: str = "tmp", settings: dict = N
     
     import sys
     sys.argv = ["reelsfy.py", "-f", input_path]
+    # Pass results_dir to main() through a global or argument
+    # For now, set it as a module-level variable that main() can access
+    global REQUEST_RESULTS_DIR
+    REQUEST_RESULTS_DIR = results_dir
     main()
 
 def process_export_file(input_path: str, out_dir: str = "tmp"):

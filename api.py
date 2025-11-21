@@ -7,7 +7,7 @@ import time
 import re
 import threading
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks, Request
 from supabase import create_client
 from reelsfy_folder.reelsfy import process_video_file, process_export_file, initialize_models  # your existing script, refactored into importable functions
 
@@ -190,6 +190,125 @@ async def process_video(payload: dict, background_tasks: BackgroundTasks):
     return {"status": "processing" if not export_mode else "completed"}
 
 
+# GCS Storage API endpoints for frontend
+@app.post("/upload-file")
+async def upload_file(request: Request):
+    """
+    Upload file to GCS (called from frontend storageClient).
+    Used for authenticated uploads to private buckets.
+    """
+    try:
+        form = await request.form()
+        file = form.get("file")
+        bucket = form.get("bucket")  # "videos" or "processed-videos"
+        path = form.get("path")
+        content_type = form.get("contentType")
+        
+        if not file or not bucket or not path:
+            return {"error": "Missing parameters: file, bucket, and path are required"}, 400
+        
+        # Import storage client
+        from storage_client import storage_client
+        
+        # Save uploaded file temporarily
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            content = await file.read()
+            tmp_file.write(content)
+            temp_path = tmp_file.name
+        
+        try:
+            # Upload to GCS
+            storage_client.upload_from_file(
+                bucket,
+                path,
+                temp_path,
+                content_type=content_type if content_type else None
+            )
+            return {"success": True, "path": path}
+        finally:
+            # Cleanup temp file
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+                
+    except Exception as e:
+        print(f"Error uploading file: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e)}, 500
+
+
+@app.post("/delete-files")
+async def delete_files(payload: dict):
+    """
+    Delete files from GCS (called from frontend storageClient).
+    """
+    try:
+        bucket = payload.get("bucket")  # "videos" or "processed-videos"
+        paths = payload.get("paths", [])
+        
+        if not bucket or not paths:
+            return {"error": "Missing parameters: bucket and paths are required"}, 400
+        
+        # Import storage client
+        from storage_client import storage_client
+        
+        # Delete files
+        storage_client.delete(bucket, paths if isinstance(paths, list) else [paths])
+        return {"success": True}
+        
+    except Exception as e:
+        print(f"Error deleting files: {e}")
+        return {"error": str(e)}, 500
+
+
+@app.post("/create-signed-url")
+async def create_signed_url(payload: dict):
+    """
+    Create signed URL for GCS file (called from frontend storageClient).
+    Used for temporary access to private files.
+    """
+    try:
+        bucket = payload.get("bucket")  # "videos" or "processed-videos"
+        path = payload.get("path")
+        expiration_seconds = payload.get("expirationSeconds", 3600)
+        
+        if not bucket or not path:
+            return {"error": "Missing parameters: bucket and path are required"}, 400
+        
+        # Import storage client
+        from storage_client import storage_client
+        
+        # Create signed URL
+        signed_url = storage_client.create_signed_url(bucket, path, expiration_seconds)
+        return {"signedUrl": signed_url}
+        
+    except Exception as e:
+        print(f"Error creating signed URL: {e}")
+        return {"error": str(e)}, 500
+
+
+@app.get("/list-files")
+async def list_files(bucket: str, prefix: str = ""):
+    """
+    List files in GCS bucket (called from frontend storageClient).
+    """
+    try:
+        if not bucket:
+            return {"error": "Missing parameter: bucket is required"}, 400
+        
+        # Import storage client
+        from storage_client import storage_client
+        
+        # List files
+        files = storage_client.list_files(bucket, prefix)
+        return {"files": files}
+        
+    except Exception as e:
+        print(f"Error listing files: {e}")
+        return {"error": str(e)}, 500
+
+
 def update_progress(video_id: str, progress: int, stage: str = None, eta_seconds: int = None):
     """Update video processing progress in database for real-time UI updates."""
     try:
@@ -220,6 +339,20 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     """
     # Start timing
     start_time = time.time()
+    
+    # Create unique working directory for this request to avoid conflicts with concurrent requests
+    import uuid
+    request_id = str(uuid.uuid4())[:8]  # Short unique ID for this request
+    unique_tmp_dir = f"tmp_{request_id}"
+    unique_results_dir = f"results_{request_id}"
+    
+    # Ensure unique directories exist and are clean
+    os.makedirs(unique_tmp_dir, exist_ok=True)
+    os.makedirs(unique_results_dir, exist_ok=True)
+    
+    print(f"🔒 Using isolated working directories for request {request_id}:")
+    print(f"   tmp: {unique_tmp_dir}/")
+    print(f"   results: {unique_results_dir}/")
     
     # 0) Ensure models are loaded (should already be loaded in background, but check anyway)
     print("\n" + "="*60)
@@ -349,7 +482,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     print("▶️  RUNNING: Download original video from Supabase Storage (auto-continue mode)\n")
     
     update_progress(video_id, 0, "מוריד סרטון מקורי...")
-    local_in = os.path.basename(file_key)
+    local_in = os.path.join(unique_tmp_dir, os.path.basename(file_key))
     data = supabase.storage.from_(bucket).download(file_key)
     if isinstance(data, bytes):
         with open(local_in, "wb") as f:
@@ -372,8 +505,10 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     print(f"Short video mode: {is_short_video}")
     
     try:
-        process_video_file(local_in, out_dir="tmp", settings=settings, video_id=video_id, 
-                          progress_callback=update_progress, is_short_video=is_short_video)
+        # Use unique directories to avoid conflicts with concurrent requests
+        process_video_file(local_in, out_dir=unique_tmp_dir, settings=settings, video_id=video_id, 
+                          progress_callback=update_progress, is_short_video=is_short_video, 
+                          results_dir=unique_results_dir)
     except Exception as e:
         import traceback
         print(f"\n{'='*60}")
@@ -412,8 +547,8 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     # Full path for uploading (includes user_id)
     video_output_dir = file_key_no_ext  # e.g., user_id/timestamp
     
-    vid_name_no_mp4 = local_in.split(".")[0]
-    content_txt_path = f"results/{vid_name_no_mp4}/content.txt"
+    vid_name_no_mp4 = os.path.splitext(os.path.basename(local_in))[0]
+    content_txt_path = f"{unique_results_dir}/{vid_name_no_mp4}/content.txt"
 
     # 3) Upload processed results (videos + SRTs, but NOT final_xxx.mp4)
     print("\n" + "="*60)
@@ -432,7 +567,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     else:
         print(f"Did not find content.txt in {content_txt_path}")
 
-    for fname in os.listdir("tmp"):
+    for fname in os.listdir(unique_tmp_dir):
         # For short videos: only upload output_cropped files (skip output_croppedwithoutcutting)
         # For regular videos: upload all output_cropped files
         # Note: SRT files are now word-level only (chunking happens in frontend)
@@ -440,7 +575,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
             # Short video: only upload the essential files
             if (fname == "output_cropped000.mp4" or 
                 fname == "output_cropped000.srt"):
-                local_path = os.path.join("tmp", fname)
+                local_path = os.path.join(unique_tmp_dir, fname)
                 dest_path = f"{video_output_dir}/{fname}"
                 supabase.storage.from_("processed-videos").upload(dest_path, local_path)
                 print(f"Uploaded {fname}")
@@ -451,7 +586,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
                 fname.startswith("output_cropped") and fname.endswith(".mp4") or
                 fname.startswith("output_cropped") and fname.endswith(".srt") or
                 fname.startswith("output_nosilence") and fname.endswith(".srt")):
-                local_path = os.path.join("tmp", fname)
+                local_path = os.path.join(unique_tmp_dir, fname)
                 dest_path = f"{video_output_dir}/{fname}"
                 supabase.storage.from_("processed-videos").upload(dest_path, local_path)
                 print(f"Uploaded {fname}")
@@ -475,7 +610,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
         
         # Read SRT content
         srt_content = None
-        srt_local = os.path.join("tmp", srt_name)
+        srt_local = os.path.join(unique_tmp_dir, srt_name)
         if os.path.exists(srt_local):
             try:
                 with open(srt_local, "r", encoding="utf-8") as sf:
@@ -532,7 +667,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
 
             # best-effort read of retimed SRT content (includes <color> tags from GPT)
             srt_content = None
-            srt_local = os.path.join("tmp", srt_name)
+            srt_local = os.path.join(unique_tmp_dir, srt_name)
             if os.path.exists(srt_local):
                 try:
                     with open(srt_local, "r", encoding="utf-8") as sf:
@@ -597,20 +732,20 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     print("="*60)
     
     # Delete tmp/ folder
-    if os.path.exists("tmp"):
+    if os.path.exists(unique_tmp_dir):
         try:
-            shutil.rmtree("tmp")
-            print("�?Deleted tmp/ folder")
+            shutil.rmtree(unique_tmp_dir)
+            print(f"�?Deleted {unique_tmp_dir} folder")
         except Exception as e:
-            print(f"⚠️  Could not delete tmp/ folder: {e}")
+            print(f"⚠️  Could not delete {unique_tmp_dir} folder: {e}")
     
     # Delete results/ folder
-    if os.path.exists("results"):
+    if os.path.exists(unique_results_dir):
         try:
-            shutil.rmtree("results")
-            print("�?Deleted results/ folder")
+            shutil.rmtree(unique_results_dir)
+            print(f"�?Deleted {unique_results_dir} folder")
         except Exception as e:
-            print(f"⚠️  Could not delete results/ folder: {e}")
+            print(f"⚠️  Could not delete {unique_results_dir} folder: {e}")
     
     # Delete downloaded video file from main directory
     if os.path.exists(local_in):
