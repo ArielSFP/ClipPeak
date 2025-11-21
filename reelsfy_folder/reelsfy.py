@@ -43,11 +43,10 @@ import cv2
 import ffmpeg
 # pytube removed - not used (YouTube download was only for CLI, API always uses local files)
 from openai import OpenAI
-import mediapipe as mp
 
 # --- Config / Keys ---
 # Load from environment variable (Cloud Run secret) with fallback for local dev
-OPENAI_API_KEY = 'JvsYUG4uvvZtzdCmdlyhBjRXLbUYIlw3ww53WR-_ASeC6lnRGgs31M3KSls2X7bPZqo3T3BlbkFJgNhfHRgUmDVo6KhP1_gxWS3Odg5c-z8Dko5bJxXWhaMALE18qj0J-u_Ta5WqJFReHytEqDkOQA' #sk-proj-Wx_5pt and last A
+OPENAI_API_KEY = 'k-proj-Wx_5ptJvsYUG4uvvZtzdCmdlyhBjRXLbUYIlw3ww53WR-_ASeC6lnRGgs31M3KSls2X7bPZqo3T3BlbkFJgNhfHRgUmDVo6KhP1_gxWS3Odg5c-z8Dko5bJxXWhaMALE18qj0J-u_Ta5WqJFReHytEqDkOQA' #sk-proj-Wx_5pt and last A
 
 # Set up OpenAI client
 openai_client = OpenAI(api_key=OPENAI_API_KEY)

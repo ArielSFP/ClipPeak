@@ -644,8 +644,8 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     # Full path for uploading (includes user_id)
     video_output_dir = file_key_no_ext  # e.g., user_id/timestamp
     
-    vid_name_no_mp4 = os.path.splitext(os.path.basename(local_in))[0]
-    content_txt_path = f"{unique_results_dir}/{vid_name_no_mp4}/content.txt"
+    # content.txt is saved to {unique_results_dir}/content.txt (not in a subdirectory)
+    content_txt_path = os.path.join(unique_results_dir, "content.txt")
 
     # 3) Upload processed results (videos + SRTs, but NOT final_xxx.mp4)
     print("\n" + "="*60)
@@ -656,13 +656,15 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     update_progress(video_id, 90, "מעלה קבצים מעובדים...")
     print("Uploading files to processed-videos bucket...")
     
+    # Upload content.txt to {user_id}/{video_folder_name}/content.txt
     if os.path.exists(content_txt_path):
+        content_dest_path = f"{video_output_dir}/content.txt"
         supabase.storage.from_("processed-videos").upload(
-            f"{video_output_dir}/content.txt", content_txt_path
+            content_dest_path, content_txt_path
         )
-        print("Uploaded content.txt")
+        print(f"Uploaded content.txt to {content_dest_path}")
     else:
-        print(f"Did not find content.txt in {content_txt_path}")
+        print(f"⚠️  Did not find content.txt at {content_txt_path}")
 
     for fname in os.listdir(unique_tmp_dir):
         # For short videos: only upload output_cropped files (skip output_croppedwithoutcutting)
@@ -697,6 +699,10 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     
     update_progress(video_id, 95, "מכין רשומות מסד נתונים...")
     shorts_to_insert = []
+    
+    print(f"📂 Content.txt path: {content_txt_path}")
+    print(f"📂 Content.txt exists: {os.path.exists(content_txt_path)}")
+    print(f"📂 Is short video: {is_short_video}")
     
     if is_short_video:
         # Short video: create a single short record directly
@@ -747,9 +753,17 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
         
     elif os.path.exists(content_txt_path):
         # Regular video: read segments from content.txt
-        with open(content_txt_path, "r", encoding="utf-8") as f:
-            content = json.load(f)
-        segments = content.get("segments", [])
+        print(f"📖 Reading content.txt from {content_txt_path}")
+        try:
+            with open(content_txt_path, "r", encoding="utf-8") as f:
+                content = json.load(f)
+            segments = content.get("segments", [])
+            print(f"📊 Found {len(segments)} segments in content.txt")
+        except Exception as e:
+            print(f"❌ Failed to read/parse content.txt: {e}")
+            import traceback
+            traceback.print_exc()
+            segments = []
 
         for i, seg in enumerate(segments):
             segment_start_time  = str(seg.get("start_time", ""))
@@ -787,8 +801,12 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
                 "video_folder_name": video_folder_name,  # Only the timestamp part (e.g., 1760477721689)
             })
             print(f"Prepared DB row for {final_name}")
+    else:
+        # Regular video but content.txt doesn't exist
+        print(f"⚠️  WARNING: content.txt not found at {content_txt_path} for regular video")
+        print(f"   This means no shorts records will be created. Check if content.txt was generated.")
     
-    print(f"Prepared {len(shorts_to_insert)} shorts records")
+    print(f"\n✅ Prepared {len(shorts_to_insert)} shorts records")
 
     # 5) Insert rows into shorts table
     print("\n" + "="*60)
