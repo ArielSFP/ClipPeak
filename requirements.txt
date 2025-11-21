@@ -45,13 +45,13 @@ huggingface-hub==0.36.0
 # Computer Vision & Video Processing
 # -----------------------------------------------------------------------------
 opencv-contrib-python==4.11.0.86
-mediapipe==0.10.21
+#mediapipe==0.10.21#
 
 # -----------------------------------------------------------------------------
 # Video/Audio Processing
 # -----------------------------------------------------------------------------
 ffmpeg-python==0.2.0
-pytube==15.0.0
+# pytube==15.0.0  # Removed - not used (YouTube download was only for CLI, API always uses local files)
 scenedetect[opencv]==0.6.7.1
 imageio[ffmpeg]==2.37.2
 vidgear[core]==0.3.4

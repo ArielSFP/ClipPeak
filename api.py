@@ -195,9 +195,27 @@ async def process_video(payload: dict, background_tasks: BackgroundTasks):
 async def upload_file(request: Request):
     """
     Upload file to GCS (called from frontend storageClient).
+    Validates Supabase session token before allowing upload.
     Used for authenticated uploads to private buckets.
     """
     try:
+        # Validate Supabase authentication
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return {"error": "Missing or invalid Authorization header"}, 401
+        
+        token = auth_header.replace("Bearer ", "")
+        try:
+            # Validate Supabase session token
+            user_response = supabase.auth.get_user(token)
+            if not user_response or not user_response.user:
+                return {"error": "Invalid or expired session token"}, 401
+            user = user_response.user
+            print(f"✅ Authenticated user: {user.email} ({user.id})")
+        except Exception as auth_error:
+            print(f"⚠️  Authentication failed: {auth_error}")
+            return {"error": "Authentication failed"}, 401
+        
         form = await request.form()
         file = form.get("file")
         bucket = form.get("bucket")  # "videos" or "processed-videos"
@@ -206,6 +224,15 @@ async def upload_file(request: Request):
         
         if not file or not bucket or not path:
             return {"error": "Missing parameters: file, bucket, and path are required"}, 400
+        
+        # For videos bucket, ensure path matches user ID (security check)
+        if bucket == "videos":
+            # Path should be: {user_id}/{filename}
+            expected_user_id = user.id
+            path_parts = path.split("/")
+            if len(path_parts) < 2 or path_parts[0] != expected_user_id:
+                print(f"⚠️  Security: User {user.id} tried to upload to path {path} (expected {expected_user_id}/...)")
+                return {"error": "Invalid path: must upload to your own folder"}, 403
         
         # Import storage client
         from storage_client import storage_client
@@ -225,6 +252,7 @@ async def upload_file(request: Request):
                 temp_path,
                 content_type=content_type if content_type else None
             )
+            print(f"✅ Uploaded {path} to {bucket} bucket")
             return {"success": True, "path": path}
         finally:
             # Cleanup temp file
@@ -239,42 +267,99 @@ async def upload_file(request: Request):
 
 
 @app.post("/delete-files")
-async def delete_files(payload: dict):
+async def delete_files(payload: dict, request: Request):
     """
     Delete files from GCS (called from frontend storageClient).
+    Validates Supabase session token before allowing delete.
     """
     try:
+        # Validate Supabase authentication
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return {"error": "Missing or invalid Authorization header"}, 401
+        
+        token = auth_header.replace("Bearer ", "")
+        try:
+            # Validate Supabase session token
+            user_response = supabase.auth.get_user(token)
+            if not user_response or not user_response.user:
+                return {"error": "Invalid or expired session token"}, 401
+            user = user_response.user
+            print(f"✅ Authenticated user: {user.email} ({user.id})")
+        except Exception as auth_error:
+            print(f"⚠️  Authentication failed: {auth_error}")
+            return {"error": "Authentication failed"}, 401
+        
         bucket = payload.get("bucket")  # "videos" or "processed-videos"
         paths = payload.get("paths", [])
         
         if not bucket or not paths:
             return {"error": "Missing parameters: bucket and paths are required"}, 400
         
+        # Convert to list if single path
+        paths_list = paths if isinstance(paths, list) else [paths]
+        
+        # For videos bucket, ensure all paths belong to the authenticated user (security check)
+        if bucket == "videos":
+            expected_user_id = user.id
+            for path in paths_list:
+                path_parts = path.split("/")
+                if len(path_parts) < 2 or path_parts[0] != expected_user_id:
+                    print(f"⚠️  Security: User {user.id} tried to delete path {path} (expected {expected_user_id}/...)")
+                    return {"error": f"Invalid path: can only delete files from your own folder"}, 403
+        
         # Import storage client
         from storage_client import storage_client
         
         # Delete files
-        storage_client.delete(bucket, paths if isinstance(paths, list) else [paths])
+        storage_client.delete(bucket, paths_list)
+        print(f"✅ Deleted {len(paths_list)} file(s) from {bucket} bucket")
         return {"success": True}
         
     except Exception as e:
         print(f"Error deleting files: {e}")
+        import traceback
+        traceback.print_exc()
         return {"error": str(e)}, 500
 
 
 @app.post("/create-signed-url")
-async def create_signed_url(payload: dict):
+async def create_signed_url(payload: dict, request: Request):
     """
     Create signed URL for GCS file (called from frontend storageClient).
+    Validates Supabase session token before allowing access.
     Used for temporary access to private files.
     """
     try:
+        # Validate Supabase authentication
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return {"error": "Missing or invalid Authorization header"}, 401
+        
+        token = auth_header.replace("Bearer ", "")
+        try:
+            # Validate Supabase session token
+            user_response = supabase.auth.get_user(token)
+            if not user_response or not user_response.user:
+                return {"error": "Invalid or expired session token"}, 401
+            user = user_response.user
+        except Exception as auth_error:
+            print(f"⚠️  Authentication failed: {auth_error}")
+            return {"error": "Authentication failed"}, 401
+        
         bucket = payload.get("bucket")  # "videos" or "processed-videos"
         path = payload.get("path")
         expiration_seconds = payload.get("expirationSeconds", 3600)
         
         if not bucket or not path:
             return {"error": "Missing parameters: bucket and path are required"}, 400
+        
+        # For videos bucket, ensure path belongs to authenticated user (security check)
+        if bucket == "videos":
+            expected_user_id = user.id
+            path_parts = path.split("/")
+            if len(path_parts) < 2 or path_parts[0] != expected_user_id:
+                return {"error": "Invalid path: can only access files from your own folder"}, 403
         
         # Import storage client
         from storage_client import storage_client
@@ -285,6 +370,8 @@ async def create_signed_url(payload: dict):
         
     except Exception as e:
         print(f"Error creating signed URL: {e}")
+        import traceback
+        traceback.print_exc()
         return {"error": str(e)}, 500
 
 
@@ -475,6 +562,15 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     # Initialize progress tracking
     update_progress(video_id, 0, "מתחיל עיבוד...")
 
+    # Create unique save directory for TalkNet (all subdirectories for isolation)
+    unique_save_dir = os.path.join(unique_tmp_dir, "save")
+    os.makedirs(unique_save_dir, exist_ok=True)
+    # Create all TalkNet subdirectories for isolation
+    os.makedirs(os.path.join(unique_save_dir, "pyavi"), exist_ok=True)
+    os.makedirs(os.path.join(unique_save_dir, "pycrop"), exist_ok=True)
+    os.makedirs(os.path.join(unique_save_dir, "pyframes"), exist_ok=True)
+    os.makedirs(os.path.join(unique_save_dir, "pywork"), exist_ok=True)
+
     # 1) Download original video from Supabase Storage
     print("\n" + "="*60)
     print("STAGE: Download original video from Supabase Storage")
@@ -506,9 +602,10 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     
     try:
         # Use unique directories to avoid conflicts with concurrent requests
+        unique_save_dir = os.path.join(unique_tmp_dir, "save")
         process_video_file(local_in, out_dir=unique_tmp_dir, settings=settings, video_id=video_id, 
                           progress_callback=update_progress, is_short_video=is_short_video, 
-                          results_dir=unique_results_dir)
+                          results_dir=unique_results_dir, tmp_dir=unique_tmp_dir, save_dir=unique_save_dir)
     except Exception as e:
         import traceback
         print(f"\n{'='*60}")
@@ -755,15 +852,16 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
         except Exception as e:
             print(f"⚠️  Could not delete {local_in}: {e}")
     
-    # Delete TalkNet temporary files in save/ folder and subdirectories
+    # Delete TalkNet temporary files in unique save/ folder and subdirectories
     # Structure: save/pyavi/ and save/pycrop/
-    if os.path.exists("save"):
+    unique_save_dir = os.path.join(unique_tmp_dir, "save")
+    if os.path.exists(unique_save_dir):
         try:
             deleted_count = 0
             
             # Delete files in save/ root
-            for filename in os.listdir("save"):
-                file_path = os.path.join("save", filename)
+            for filename in os.listdir(unique_save_dir):
+                file_path = os.path.join(unique_save_dir, filename)
                 if os.path.isfile(file_path) and filename.endswith(('.avi', '.wav', '.pckl')):
                     try:
                         os.remove(file_path)
@@ -772,7 +870,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
                         print(f"⚠️  Could not delete {file_path}: {e}")
             
             # Delete all files in save/pyavi/ subdirectory
-            pyavi_dir = os.path.join("save", "pyavi")
+            pyavi_dir = os.path.join(unique_save_dir, "pyavi")
             if os.path.exists(pyavi_dir):
                 for filename in os.listdir(pyavi_dir):
                     file_path = os.path.join(pyavi_dir, filename)
@@ -784,7 +882,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
                             print(f"⚠️  Could not delete {file_path}: {e}")
             
             # Delete all files in save/pycrop/ subdirectory
-            pycrop_dir = os.path.join("save", "pycrop")
+            pycrop_dir = os.path.join(unique_save_dir, "pycrop")
             if os.path.exists(pycrop_dir):
                 for filename in os.listdir(pycrop_dir):
                     file_path = os.path.join(pycrop_dir, filename)
@@ -816,24 +914,29 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     print(f"Total time: {minutes}m {seconds}s ({total_time:.2f} seconds)")
     print("="*60 + "\n")
     
+    # Print detailed timing statistics (stage-by-stage breakdown)
+    from reelsfy_folder.reelsfy import print_timing_report
+    print_timing_report()
+    
     print(f"Finished run_reelsfy process.")
 
 
-def clear_tmp_export_artifacts():
+def clear_tmp_export_artifacts(tmp_dir: str):
     """Remove stale export artifacts so per-clip exports don't mix with previous runs."""
     patterns = [
-        "tmp/output_cropped*.mp4",
-        "tmp/output_cropped*.srt",
-        "tmp/output_croppedwithoutcutting*.mp4",
-        "tmp/output_nosilence*.mp4",
-        "tmp/output_nosilence*.srt",
-        "tmp/final_*.mp4",
-        "tmp/styling_data_*.json",
-        "tmp/logo_*.png",
+        "output_cropped*.mp4",
+        "output_cropped*.srt",
+        "output_croppedwithoutcutting*.mp4",
+        "output_nosilence*.mp4",
+        "output_nosilence*.srt",
+        "final_*.mp4",
+        "styling_data_*.json",
+        "logo_*.png",
     ]
 
     for pattern in patterns:
-        for path in glob.glob(pattern):
+        pattern_path = os.path.join(tmp_dir, pattern)
+        for path in glob.glob(pattern_path):
             try:
                 if os.path.isdir(path):
                     shutil.rmtree(path, ignore_errors=True)
@@ -921,10 +1024,18 @@ def run_export_processing(
         print(f"📋 First short data: {first_short}")
     
     try:
-        # Ensure working directories exist
-        os.makedirs("tmp", exist_ok=True)
-        os.makedirs("results", exist_ok=True)
-        clear_tmp_export_artifacts()
+        # Create unique directories for export processing (isolate from concurrent requests)
+        import uuid
+        request_id = str(uuid.uuid4())[:8]
+        unique_tmp_dir_export = f"tmp_export_{request_id}"
+        unique_results_dir_export = f"results_export_{request_id}"
+        os.makedirs(unique_tmp_dir_export, exist_ok=True)
+        os.makedirs(unique_results_dir_export, exist_ok=True)
+        clear_tmp_export_artifacts(unique_tmp_dir_export)
+        
+        print(f"🔒 Using isolated working directories for export request {request_id}:")
+        print(f"   tmp: {unique_tmp_dir_export}/")
+        print(f"   results: {unique_results_dir_export}/")
         
         # Use folder info from parameters (sent from frontend)
         video_output_dir = f"{user_folder_id}/{video_folder_name}"
@@ -945,7 +1056,7 @@ def run_export_processing(
             print(f"Debug: Attempting to download from '{silence_video_key}'")
             try:
                 video_data = supabase.storage.from_("processed-videos").download(silence_video_key)
-                local_video_path = f"tmp/output_cropped{short_index:03}.mp4"
+                local_video_path = os.path.join(unique_tmp_dir_export, f"output_cropped{short_index:03}.mp4")
                 
                 if isinstance(video_data, bytes):
                     with open(local_video_path, "wb") as f:
@@ -959,7 +1070,7 @@ def run_export_processing(
                 
                 # Save the edited SRT content (from frontend, includes <color> tags)
                 edited_srt_content = short_data.get('editedSrtContent', '')
-                local_srt_path = f"tmp/output_nosilence{short_index:03}.srt"
+                local_srt_path = os.path.join(unique_tmp_dir_export, f"output_nosilence{short_index:03}.srt")
                 
                 if edited_srt_content:
                     with open(local_srt_path, "w", encoding='utf-8') as f:
@@ -977,7 +1088,7 @@ def run_export_processing(
                     "music": short_data.get("music", {})
                 }
                 
-                styling_file = f"tmp/styling_data_{short_index:03}.json"
+                styling_file = os.path.join(unique_tmp_dir_export, f"styling_data_{short_index:03}.json")
                 with open(styling_file, 'w', encoding='utf-8') as f:
                     json.dump(styling_data, f, indent=2, ensure_ascii=False)
                 
@@ -1003,7 +1114,7 @@ def run_export_processing(
                 if logo_url:
                     try:
                         logo_data = supabase.storage.from_("processed-videos").download(logo_url)
-                        local_logo_path = f"tmp/logo_{short_index:03}.png"
+                        local_logo_path = os.path.join(unique_tmp_dir_export, f"logo_{short_index:03}.png")
                         
                         if isinstance(logo_data, bytes):
                             with open(local_logo_path, "wb") as f:
@@ -1030,7 +1141,8 @@ def run_export_processing(
         print("Processing videos with export mode (burn subtitles, add logos, add music)...")
         # We don't need to pass a file path since we're working with already downloaded files
         try:
-            process_export_file("", out_dir="tmp")
+            unique_save_dir_export = os.path.join(unique_tmp_dir_export, "save")
+            process_export_file("", out_dir=unique_tmp_dir_export, tmp_dir=unique_tmp_dir_export, save_dir=unique_save_dir_export)
             print("Finished processing export files")
         except Exception as e:
             import traceback
@@ -1060,9 +1172,9 @@ def run_export_processing(
         # Build a mapping of shortIndex to short data for easy lookup
         shorts_map = {short_data.get('shortIndex', 0): short_data for short_data in export_data.get('shorts', [])}
         
-        for fname in os.listdir("tmp"):
+        for fname in os.listdir(unique_tmp_dir_export):
             if fname.startswith("final_") and fname.endswith(".mp4"):
-                local_path = os.path.join("tmp", fname)
+                local_path = os.path.join(unique_tmp_dir_export, fname)
                 
                 # Extract short index from filename (final_XXX.mp4)
                 try:

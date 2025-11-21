@@ -41,13 +41,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 import ffmpeg
-from pytube import YouTube
+# pytube removed - not used (YouTube download was only for CLI, API always uses local files)
 from openai import OpenAI
 import mediapipe as mp
 
 # --- Config / Keys ---
 # Load from environment variable (Cloud Run secret) with fallback for local dev
-OPENAI_API_KEY = 'JvsYUG4uvvZtzdCmdlyhBjRXLbUYIlw3ww53WR-_ASeC6lnRGgs31M3KSls2X7bPZqo3T3BlbkFJgNhfHRgUmDVo6KhP1_gxWS3Odg5c-z8Dko5bJxXWhaMALE18qj0J-u_Ta5WqJFReHytEqDkOQ' #sk-proj-Wx_5pt and last A
+OPENAI_API_KEY = 'JvsYUG4uvvZtzdCmdlyhBjRXLbUYIlw3ww53WR-_ASeC6lnRGgs31M3KSls2X7bPZqo3T3BlbkFJgNhfHRgUmDVo6KhP1_gxWS3Odg5c-z8Dko5bJxXWhaMALE18qj0J-u_Ta5WqJFReHytEqDkOQA' #sk-proj-Wx_5pt and last A
 
 # Set up OpenAI client
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -82,8 +82,10 @@ SKIP_MODE = False  # Global skip mode - if True, auto-continue all stages
 GLOBAL_TALKNET = None
 GLOBAL_TALKNET_DET = None
 
-# Global variable for request-specific results directory (for isolation)
+# Global variables for request-specific directories (for isolation between concurrent requests)
 REQUEST_RESULTS_DIR = None
+REQUEST_TMP_DIR = None  # Unique tmp directory per request
+REQUEST_SAVE_DIR = None  # Unique save directory per request (for TalkNet)
 
 # Global variable to track last reported progress (prevents backward jumps)
 _LAST_PROGRESS = 0
@@ -1095,7 +1097,7 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
     Returns:
         tuple: (transcript_text, detected_language)
     """
-    srt_path = os.path.join('tmp', f"{os.path.splitext(input_file)[0]}.srt")
+    srt_path = os.path.join(get_tmp_dir(), f"{os.path.splitext(input_file)[0]}.srt")
     if os.path.exists(srt_path):
         print(f"⚠️  LANGUAGE DETECTION: Found existing SRT, skipping transcription: {srt_path}")
         print(f"⚠️  LANGUAGE DETECTION: Returning 'unknown' because SRT already exists (no detection performed)")
@@ -1103,7 +1105,7 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
         return (open(srt_path, 'r', encoding='utf-8').read(), 'unknown')
 
     # Check if video has audio stream
-    video_path = os.path.join('tmp', input_file)
+    video_path = os.path.join(get_tmp_dir(), input_file)
     if not has_audio_stream(video_path):
         print("\n" + "="*60)
         print("⚠️  WARNING: NO AUDIO STREAM DETECTED")
@@ -1173,12 +1175,12 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
             else:
                 raise
         
-        video_path = os.path.join('tmp', input_file)
+        video_path = os.path.join(get_tmp_dir(), input_file)
         
         # Extract first 20 seconds of audio for reliable language detection
         # Using 20 seconds ensures enough speech content even if there's silence at the start
         print(f"🔍 LANGUAGE DETECTION: Extracting first 20 seconds of audio...")
-        detection_audio_path = os.path.join('tmp', 'language_detection_audio.wav')
+        detection_audio_path = os.path.join(get_tmp_dir(), 'language_detection_audio.wav')
         try:
             # Extract first 20 seconds using FFmpeg (much faster than transcribing full video)
             subprocess.run([
@@ -1396,7 +1398,8 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
             print(f"faster-whisper created an empty SRT file.")
             print(f"Attempting fallback to auto_subtitle...")
             
-            cmd = f"auto_subtitle tmp/{input_file} --srt_only True --output_srt True -o tmp/ --model turbo"
+            tmp_dir = get_tmp_dir()
+            cmd = f"auto_subtitle {tmp_dir}/{input_file} --srt_only True --output_srt True -o {tmp_dir}/ --model turbo"
             print(f"Running: {cmd}")
             result = subprocess.call(cmd, shell=True)
             
@@ -1418,7 +1421,8 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
         print(f"⚠️  LANGUAGE DETECTION: Returning 'unknown' because faster-whisper not available (ImportError)")
         
         # Fallback to original method
-        cmd = f"auto_subtitle tmp/{input_file} --srt_only True --output_srt True -o tmp/ --model turbo"
+        tmp_dir = get_tmp_dir()
+        cmd = f"auto_subtitle {tmp_dir}/{input_file} --srt_only True --output_srt True -o {tmp_dir}/ --model turbo"
         print(f"Transcribing with auto_subtitle: {cmd}")
         subprocess.call(cmd, shell=True)
         
@@ -1450,7 +1454,8 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
         else:
             print("   Audio stream detected but transcription failed. Trying auto_subtitle fallback...")
             print(f"⚠️  LANGUAGE DETECTION: Returning 'unknown' because transcription failed (using auto_subtitle fallback)")
-            cmd = f"auto_subtitle tmp/{input_file} --srt_only True --output_srt True -o tmp/ --model turbo"
+            tmp_dir = get_tmp_dir()
+            cmd = f"auto_subtitle {tmp_dir}/{input_file} --srt_only True --output_srt True -o {tmp_dir}/ --model turbo"
             print(f"Transcribing with auto_subtitle: {cmd}")
             subprocess.call(cmd, shell=True)
             
@@ -1473,7 +1478,8 @@ def generate_transcript(input_file: str) -> tuple[str, str]:
         traceback.print_exc()
         
         # Fallback to original method
-        cmd = f"auto_subtitle tmp/{input_file} --srt_only True --output_srt True -o tmp/ --model turbo"
+        tmp_dir = get_tmp_dir()
+        cmd = f"auto_subtitle {tmp_dir}/{input_file} --srt_only True --output_srt True -o {tmp_dir}/ --model turbo"
         print(f"Transcribing with auto_subtitle: {cmd}")
         subprocess.call(cmd, shell=True)
         
@@ -1784,7 +1790,7 @@ def generate_viral(transcript: str) -> dict:
     
     try:
         # Save prompt to file for debugging
-        debug_prompt_path = os.path.join('tmp', 'gpt_prompt_debug.txt')
+        debug_prompt_path = os.path.join(get_tmp_dir(), 'gpt_prompt_debug.txt')
         with open(debug_prompt_path, 'w', encoding='utf-8') as f:
             f.write("="*80 + "\n")
             f.write("SYSTEM PROMPT:\n")
@@ -1859,7 +1865,7 @@ def generate_segments(segments):
     
     for i, seg in enumerate(segments):
         segment_start_time = time.time()
-        out = os.path.join('tmp', f"output{str(i).zfill(3)}.mp4")
+        out = os.path.join(get_tmp_dir(), f"output{str(i).zfill(3)}.mp4")
         
         if os.path.exists(out):
             print(f"⏭️  Segment {i+1}/{total_segments}: Skipping (already exists: {out})")
@@ -1883,7 +1889,7 @@ def generate_segments(segments):
             print(f"   ⚠️  Adjusted duration: {dur:.1f}s -> {end - start:.1f}s")
 
         # Check if we need to re-encode (scale down or change FPS) or can use stream copy
-        input_video = "tmp/input_video.mp4"
+        input_video = os.path.join(get_tmp_dir(), "input_video.mp4")
         video_resolution = get_video_resolution(input_video)
         needs_scaling = False
         needs_fps_change = False
@@ -2009,8 +2015,8 @@ def generate_short(input_file: str, output_file: str, srt_path: str = None, dete
         ease: Easing factor for smooth motion (0-1, default 0.85)
         zoom_cues: List of subtitle indices that should have zoom effect
     """
-    in_path  = os.path.join('tmp', input_file)
-    out_path = os.path.join('tmp', output_file)
+    in_path  = os.path.join(get_tmp_dir(), input_file)
+    out_path = os.path.join(get_tmp_dir(), output_file)
 
     if os.path.exists(out_path):
         print(f"Skipping cropping, exists: {out_path}")
@@ -2079,11 +2085,25 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
     print("🔍 Running TalkNet active speaker detection...")
     talknet_dir = os.path.abspath(os.path.join("fast-asd", "talknet"))
     sys.path.insert(0, talknet_dir)
-    from demoTalkNet import main as talknet_main
+    import demoTalkNet
+    
+    # CRITICAL: Set unique save_path for TalkNet to use isolated directory
+    # TalkNet hardcodes save_path = "save/", so we need to override it before calling
+    unique_save_dir = get_save_dir()
+    demoTalkNet.save_path = unique_save_dir + "/" if not unique_save_dir.endswith("/") else unique_save_dir
+    # Update derived paths
+    demoTalkNet.pyaviPath = os.path.join(demoTalkNet.save_path, 'pyavi')
+    demoTalkNet.pyframesPath = os.path.join(demoTalkNet.save_path, 'pyframes')
+    demoTalkNet.pyworkPath = os.path.join(demoTalkNet.save_path, 'pywork')
+    demoTalkNet.pycropPath = os.path.join(demoTalkNet.save_path, 'pycrop')
+    demoTalkNet.videoFilePath = os.path.join(demoTalkNet.pyaviPath, 'video.avi')
+    demoTalkNet.audioFilePath = os.path.join(demoTalkNet.pyaviPath, 'audio.wav')
+    
+    print(f"🎯 TalkNet using isolated save directory: {unique_save_dir}")
     
     try:
         # Run TalkNet on the video (no debug visualization)
-        talknet_results = talknet_main(
+        talknet_results = demoTalkNet.main(
             GLOBAL_TALKNET,
             GLOBAL_TALKNET_DET,
             in_path,
@@ -2229,7 +2249,7 @@ def generate_short_with_talknet(in_path: str, out_path: str, srt_path: str = Non
     
     # Start FFmpeg process with pipe input for direct encoding
     import subprocess
-    tmp_video_only = os.path.join("tmp", f"__tmp_tracked_{os.path.basename(out_path)}")
+    tmp_video_only = os.path.join(get_tmp_dir(), f"__tmp_tracked_{os.path.basename(out_path)}")
     
     ffmpeg_cmd = [
         'ffmpeg', '-y',
@@ -2413,8 +2433,8 @@ def apply_zoom_effects_only(input_file: str, output_file: str, srt_path: str = N
         output_file: Name of output video file in tmp/ directory
         srt_path: Path to SRT file with <zoom> tags
     """
-    in_path  = os.path.join('tmp', input_file)
-    out_path = os.path.join('tmp', output_file)
+    in_path  = os.path.join(get_tmp_dir(), input_file)
+    out_path = os.path.join(get_tmp_dir(), output_file)
 
     if os.path.exists(out_path):
         print(f"Skipping zoom application, exists: {out_path}")
@@ -2451,7 +2471,7 @@ def apply_zoom_effects_only(input_file: str, output_file: str, srt_path: str = N
         return False
 
     # Start FFmpeg process with pipe input
-    tmp_video_only = os.path.join("tmp", f"__tmp_zoom_{os.path.basename(out_path)}")
+    tmp_video_only = os.path.join(get_tmp_dir(), f"__tmp_zoom_{os.path.basename(out_path)}")
     
     ffmpeg_cmd = [
         'ffmpeg', '-y',
@@ -2558,7 +2578,7 @@ def transcribe_clip_with_faster_whisper(input_path: str, detected_language: str 
         progress_range: Tuple (min_progress, max_progress) for progress reporting, or None to use default scaling
     """
     base = os.path.splitext(os.path.basename(input_path))[0]
-    srt_path = os.path.join('tmp', f"{base}.srt")
+    srt_path = os.path.join(get_tmp_dir(), f"{base}.srt")
     
     # Check if video has audio stream
     if not has_audio_stream(input_path):
@@ -2696,7 +2716,8 @@ def transcribe_clip_with_faster_whisper(input_path: str, detected_language: str 
     except Exception as e:
         print(f"⚠️  faster-whisper failed for clip ({e}), using auto_subtitle fallback")
         # Fallback to auto_subtitle
-        cmd = f"auto_subtitle {input_path} --srt_only True -o tmp/ --model turbo"
+        tmp_dir = get_tmp_dir()
+        cmd = f"auto_subtitle {input_path} --srt_only True -o {tmp_dir}/ --model turbo"
         subprocess.call(cmd, shell=True)
         return srt_path
 
@@ -2715,8 +2736,8 @@ def generate_subtitle_for_clip(input_path: str, detected_language: str = None, p
     Only generates if SRT doesn't already exist, then enforces max 5 words per cue with min 1.0s duration.
     """
     base      = os.path.splitext(os.path.basename(input_path))[0]
-    srt_path  = os.path.join('tmp', f"{base}.srt")
-    old_path  = os.path.join('tmp', f"old_{base}.srt")
+    srt_path  = os.path.join(get_tmp_dir(), f"{base}.srt")
+    old_path  = os.path.join(get_tmp_dir(), f"old_{base}.srt")
 
     # If SRT doesn't exist, create a fresh SRT using faster-whisper (with fallback to auto_subtitle)
     if not os.path.exists(srt_path):
@@ -2725,7 +2746,8 @@ def generate_subtitle_for_clip(input_path: str, detected_language: str = None, p
             transcribe_clip_with_faster_whisper(input_path, detected_language, progress_range)
         except Exception as e:
             print(f"Warning: transcription failed ({e}), trying auto_subtitle fallback")
-            cmd = f"auto_subtitle {input_path} --srt_only True -o tmp/ --model turbo"
+            tmp_dir = get_tmp_dir()
+            cmd = f"auto_subtitle {input_path} --srt_only True -o {tmp_dir}/ --model turbo"
             subprocess.call(cmd, shell=True)
         
         if os.path.exists(srt_path):
@@ -3339,7 +3361,7 @@ def burn_subtitles(input_video: str, srt_path: str, output_video: str):
     inp = ffmpeg.input(input_video, hwaccel='cuda')
     # Use the fonts directory in tmp folder
     import os
-    fonts_dir = os.path.abspath(os.path.join("tmp", "fonts"))  # Absolute path to tmp/fonts directory
+    fonts_dir = os.path.abspath(os.path.join(get_tmp_dir(), "fonts"))  # Absolute path to tmp/fonts directory
     print(f"   🔤 Using font directory: {fonts_dir}")
     print(f"   🔤 Font name in style: {font_name}")
     print(f"   🔤 Font directory exists: {os.path.exists(fonts_dir)}")
@@ -3364,20 +3386,41 @@ def burn_subtitles(input_video: str, srt_path: str, output_video: str):
         .run(overwrite_output=True)
     )
 
+# --- Helper functions for directory paths ---
+def get_tmp_dir():
+    """Get the unique tmp directory for current request, or default to 'tmp'."""
+    return REQUEST_TMP_DIR if REQUEST_TMP_DIR else 'tmp'
+
+def get_save_dir():
+    """Get the unique save directory for current request, or default to tmp/save."""
+    if REQUEST_SAVE_DIR:
+        return REQUEST_SAVE_DIR
+    return os.path.join(get_tmp_dir(), 'save')
+
 # --- Main entrypoint ---
 def main():
-    global PROCESSING_SETTINGS, IS_SHORT_VIDEO
+    global PROCESSING_SETTINGS, IS_SHORT_VIDEO, REQUEST_TMP_DIR, REQUEST_SAVE_DIR
     
     print("\n\nRunning reelsfy has started! Processing the video!")
     parser = argparse.ArgumentParser()
-    parser.add_argument('-v','--video_id')
-    parser.add_argument('-f','--file')
+    parser.add_argument('-f','--file', required=True, help='Path to input video file')
     parser.add_argument('--export-mode', action='store_true', help='Run in export mode for final processing')
     args = parser.parse_args()
-    if not args.export_mode and not args.video_id and not args.file:
-        parser.error('Provide --video_id or --file (or use --export-mode)')
+    if not args.export_mode and not args.file:
+        parser.error('Provide --file (or use --export-mode)')
 
-    os.makedirs('tmp', exist_ok=True)
+    # Use unique tmp directory for request isolation, or fallback to 'tmp'
+    tmp_dir = get_tmp_dir()
+    os.makedirs(tmp_dir, exist_ok=True)
+    
+    # Use unique save directory for TalkNet isolation
+    save_dir = get_save_dir()
+    os.makedirs(save_dir, exist_ok=True)
+    # Create all TalkNet subdirectories for isolation (TalkNet creates them too, but we pre-create to ensure isolation)
+    os.makedirs(os.path.join(save_dir, 'pyavi'), exist_ok=True)
+    os.makedirs(os.path.join(save_dir, 'pycrop'), exist_ok=True)
+    os.makedirs(os.path.join(save_dir, 'pyframes'), exist_ok=True)
+    os.makedirs(os.path.join(save_dir, 'pywork'), exist_ok=True)
 
     # determine a results folder key
     if not args.export_mode:
@@ -3386,8 +3429,10 @@ def main():
         if 'REQUEST_RESULTS_DIR' in globals() and REQUEST_RESULTS_DIR:
             results_dir = REQUEST_RESULTS_DIR
         elif not results_dir:
-            key = args.video_id if args.video_id else os.path.splitext(os.path.basename(args.file))[0]
+            # Fallback to default results directory (should not happen in production)
+            key = os.path.splitext(os.path.basename(args.file))[0]
             results_dir = os.path.join('results', key)
+            print(f"⚠️  WARNING: Using default results directory: {results_dir} (should use unique directory)")
         os.makedirs(results_dir, exist_ok=True)
         content_path = os.path.join(results_dir, 'content.txt')
         print(content_path)
@@ -3403,25 +3448,22 @@ def main():
     if not args.export_mode:
         log_stage("Download or copy input video")
         src = 'input_video.mp4'
-        if args.video_id:
-            YouTube(f"https://youtu.be/{args.video_id}")\
-                .streams.filter(file_extension='mp4')\
-                .get_highest_resolution()\
-                .download(output_path='tmp', filename=src)
-        else:
-            shutil.copy2(args.file, os.path.join('tmp', src))
+        # Note: video_id (YouTube download) removed - API always uses local files from storage
+        if not args.file:
+            raise ValueError("File path is required (YouTube download via video_id no longer supported)")
+        shutil.copy2(args.file, os.path.join(get_tmp_dir(), src))
         print(f"Input video ready: {src}")
         end_timing("Download or copy input video")
 
         # For SHORT VIDEO MODE: Remove silence BEFORE transcription
         if IS_SHORT_VIDEO:
             auto_cuts_enabled = PROCESSING_SETTINGS.get('autoCuts', True)
-            src_path = os.path.join('tmp', src)
+            src_path = os.path.join(get_tmp_dir(), src)
             
             if auto_cuts_enabled:
                 log_stage("Remove silence from short video (before transcription)")
                 report_progress(12, "מסיר דממות מהסרטון...")
-                src_no_silence = os.path.join('tmp', 'input_video_nosilence.mp4')
+                src_no_silence = os.path.join(get_tmp_dir(), 'input_video_nosilence.mp4')
                 
                 print("\n" + "="*60)
                 print("SHORT VIDEO MODE - Removing silence before transcription")
@@ -3450,7 +3492,7 @@ def main():
             else:
                 print("⏭️  Auto-cuts disabled - skipping silence removal for short video")
 
-        src_full_path = os.path.join('tmp', src)
+        src_full_path = os.path.join(get_tmp_dir(), src)
         video_duration_seconds = ffprobe_duration(src_full_path)
         if video_duration_seconds:
             print(f"🎞️  Active video duration: {video_duration_seconds:.2f}s")
@@ -3481,7 +3523,8 @@ def main():
     
     else:
         # In export mode, we're working with already downloaded files
-        print("Export mode: Using already downloaded files from tmp/")
+        tmp_dir = get_tmp_dir()
+        print(f"Export mode: Using already downloaded files from {tmp_dir}/")
         src = None
         detected_language = "unknown"  # In export mode, we don't have language info
 
@@ -3544,7 +3587,8 @@ def main():
         # In export mode, determine segments based on existing files
         segments = []
         # List all output_cropped*.mp4 files in tmp directory
-        for file in os.listdir('tmp'):
+        tmp_dir = get_tmp_dir()
+        for file in os.listdir(tmp_dir):
             if file.startswith('output_cropped') and file.endswith('.mp4'):
                 # Extract index from filename (output_cropped001.mp4 -> 1)
                 try:
@@ -3578,10 +3622,10 @@ def main():
             report_progress(70, "מכין קליפ יחיד...")
             
             # Use the correct source (either silence-removed or original)
-            src_path = os.path.join('tmp', src)
+            src_path = os.path.join(get_tmp_dir(), src)
             
             # Apply SRT overrides directly to the source SRT (colored words and zoom tags)
-            input_srt = os.path.join('tmp', f"{os.path.splitext(src)[0]}.srt")
+            input_srt = os.path.join(get_tmp_dir(), f"{os.path.splitext(src)[0]}.srt")
             if os.path.exists(input_srt):
                 if viral_data and 'srt_overrides' in viral_data:
                     apply_srt_overrides(input_srt, viral_data['srt_overrides'], clip_index=0)
@@ -3613,14 +3657,14 @@ def main():
             
             crop  = f"output_croppedwithoutcutting{str(i).zfill(3)}.mp4"
             nosil = f"output_cropped{str(i).zfill(3)}.mp4"
-            final = os.path.join('tmp', f"final_{str(i).zfill(3)}.mp4")
+            final = os.path.join(get_tmp_dir(), f"final_{str(i).zfill(3)}.mp4")
 
             # For short video mode, work directly with source video
             if IS_SHORT_VIDEO:
                 # Use source video (input_video_nosilence.mp4 or input_video.mp4)
                 raw = src  # This is already 'input_video_nosilence.mp4' or 'input_video.mp4'
-                raw_path = os.path.join('tmp', raw)
-                raw_srt = os.path.join('tmp', f"{os.path.splitext(raw)[0]}.srt")
+                raw_path = os.path.join(get_tmp_dir(), raw)
+                raw_srt = os.path.join(get_tmp_dir(), f"{os.path.splitext(raw)[0]}.srt")
                 
                 if not os.path.exists(raw_srt):
                     print(f"Warning: SRT not found for short video: {raw_srt}")
@@ -3633,7 +3677,7 @@ def main():
                 # 5. Remove <zoom> tags from final SRT
                 
                 raw = f"output{str(i).zfill(3)}.mp4"
-                raw_path = os.path.join('tmp', raw)
+                raw_path = os.path.join(get_tmp_dir(), raw)
                 auto_cuts_enabled = PROCESSING_SETTINGS.get('autoCuts', True)
                 
                 # STEP 1: Remove silence from extracted segment (if enabled)
@@ -3643,7 +3687,7 @@ def main():
                     report_progress(clip_progress, f"מסיר דממות מקליפ {i+1}/{len(segments)}...")
                     
                     raw_nosilence = f"output_nosilence{str(i).zfill(3)}.mp4"
-                    raw_nosilence_path = os.path.join('tmp', raw_nosilence)
+                    raw_nosilence_path = os.path.join(get_tmp_dir(), raw_nosilence)
                     
                     success = remove_silence_with_ffmpeg(
                         raw_path,
@@ -3720,7 +3764,7 @@ def main():
                     else:
                         report_progress(processing_progress, "מכין קליפ...")
                         print(f"Short video is already 9:16 - no zoom needed, copying to {nosil}")
-                        nosil_path = os.path.join('tmp', nosil)
+                        nosil_path = os.path.join(get_tmp_dir(), nosil)
                         if not os.path.exists(nosil_path):
                             shutil.copy2(raw_path, nosil_path)
                 else:
@@ -3732,8 +3776,8 @@ def main():
                     print(f"✅ Cropped short video with face tracking and zoom effects")
                 
                 # For short videos, copy and clean the SRT
-                nosil_path = os.path.join('tmp', nosil)
-                nosil_srt = os.path.join('tmp', f"{os.path.splitext(nosil)[0]}.srt")
+                nosil_path = os.path.join(get_tmp_dir(), nosil)
+                nosil_srt = os.path.join(get_tmp_dir(), f"{os.path.splitext(nosil)[0]}.srt")
                 
                 # Try to find the SRT file
                 if os.path.exists(raw_srt):
@@ -3757,8 +3801,8 @@ def main():
                 print(f"✅ Cropped segment {i} with face tracking and zoom effects")
                 
                 # Create final SRT by copying and removing <zoom> tags
-                nosil_path = os.path.join('tmp', nosil)
-                nosil_srt = os.path.join('tmp', f"{os.path.splitext(nosil)[0]}.srt")
+                nosil_path = os.path.join(get_tmp_dir(), nosil)
+                nosil_srt = os.path.join(get_tmp_dir(), f"{os.path.splitext(nosil)[0]}.srt")
                 
                 if os.path.exists(raw_srt):
                     shutil.copy2(raw_srt, nosil_srt)
@@ -3784,14 +3828,14 @@ def main():
             
         for segment_index in segments:
             nosil = f"output_cropped{str(segment_index).zfill(3)}.mp4"
-            final = os.path.join('tmp', f"final_{str(segment_index).zfill(3)}.mp4")
-            nosil_path = os.path.join('tmp', nosil)
+            final = os.path.join(get_tmp_dir(), f"final_{str(segment_index).zfill(3)}.mp4")
+            nosil_path = os.path.join(get_tmp_dir(), nosil)
             
             # Check if the input file exists
             if os.path.exists(nosil_path):
                 # Find the corresponding SRT file (contains <color> tags from GPT)
                 # In export mode, api.py downloads it as output_nosilence but uploads as output_cropped
-                srt_path = os.path.join('tmp', f"output_nosilence{str(segment_index).zfill(3)}.srt")
+                srt_path = os.path.join(get_tmp_dir(), f"output_nosilence{str(segment_index).zfill(3)}.srt")
                 if os.path.exists(srt_path):
                     burn_subtitles_with_styling(nosil_path, srt_path, final, segment_index)
                     print(f"Generated: {final}")
@@ -3800,10 +3844,9 @@ def main():
             else:
                 print(f"Warning: Input video file not found: {nosil_path}")
         
-        # Print timing report at the end
-        print_timing_report()
+        # Note: Timing report is printed in api.py after cleanup, not here
 
-def process_video_file(input_path: str, out_dir: str = "tmp", settings: dict = None, video_id: str = None, progress_callback=None, is_short_video: bool = False, results_dir: str = None):
+def process_video_file(input_path: str, out_dir: str = "tmp", settings: dict = None, video_id: str = None, progress_callback=None, is_short_video: bool = False, results_dir: str = None, tmp_dir: str = None, save_dir: str = None):
     """
     Process video file with optional custom settings from frontend.
     
@@ -3811,8 +3854,12 @@ def process_video_file(input_path: str, out_dir: str = "tmp", settings: dict = N
     video_id: Video UUID for progress tracking
     progress_callback: Function to call with (video_id, progress, stage, eta) to update progress
     is_short_video: If True, use simplified processing for videos under 3 minutes
+    results_dir: Unique results directory for this request
+    tmp_dir: Unique tmp directory for this request (for isolation)
+    save_dir: Unique save directory for this request (for TalkNet isolation)
     """
     global PROCESSING_SETTINGS, PROGRESS_CALLBACK, VIDEO_ID, IS_SHORT_VIDEO, SKIP_MODE, SOURCE_VIDEO_FPS
+    global REQUEST_RESULTS_DIR, REQUEST_TMP_DIR, REQUEST_SAVE_DIR
     
     SOURCE_VIDEO_FPS = None
     
@@ -3835,6 +3882,20 @@ def process_video_file(input_path: str, out_dir: str = "tmp", settings: dict = N
     # Reset progress tracking for new video
     global _LAST_PROGRESS
     _LAST_PROGRESS = 0
+    
+    # Set unique directories for request isolation
+    REQUEST_RESULTS_DIR = results_dir
+    REQUEST_TMP_DIR = tmp_dir if tmp_dir else out_dir  # Use provided tmp_dir or fallback to out_dir
+    REQUEST_SAVE_DIR = save_dir if save_dir else os.path.join(REQUEST_TMP_DIR, "save")  # Use provided save_dir or create in tmp_dir
+    
+    # Create unique save directory for TalkNet if needed
+    if REQUEST_SAVE_DIR:
+        os.makedirs(REQUEST_SAVE_DIR, exist_ok=True)
+        # Create all TalkNet subdirectories for isolation
+        os.makedirs(os.path.join(REQUEST_SAVE_DIR, "pyavi"), exist_ok=True)
+        os.makedirs(os.path.join(REQUEST_SAVE_DIR, "pycrop"), exist_ok=True)
+        os.makedirs(os.path.join(REQUEST_SAVE_DIR, "pyframes"), exist_ok=True)
+        os.makedirs(os.path.join(REQUEST_SAVE_DIR, "pywork"), exist_ok=True)
     
     if settings:
         print("\n" + "="*60)
@@ -3859,13 +3920,30 @@ def process_video_file(input_path: str, out_dir: str = "tmp", settings: dict = N
     
     import sys
     sys.argv = ["reelsfy.py", "-f", input_path]
-    # Pass results_dir to main() through a global or argument
-    # For now, set it as a module-level variable that main() can access
-    global REQUEST_RESULTS_DIR
-    REQUEST_RESULTS_DIR = results_dir
     main()
 
-def process_export_file(input_path: str, out_dir: str = "tmp"):
+def process_export_file(input_path: str, out_dir: str = "tmp", tmp_dir: str = None, save_dir: str = None):
+    """
+    Process export file with unique directories for isolation.
+    
+    tmp_dir: Unique tmp directory for this request
+    save_dir: Unique save directory for TalkNet (if needed)
+    """
+    global REQUEST_TMP_DIR, REQUEST_SAVE_DIR
+    
+    # Set unique directories for request isolation
+    REQUEST_TMP_DIR = tmp_dir if tmp_dir else out_dir  # Use provided tmp_dir or fallback to out_dir
+    REQUEST_SAVE_DIR = save_dir if save_dir else os.path.join(REQUEST_TMP_DIR, "save")  # Use provided save_dir or create in tmp_dir
+    
+    # Create unique save directory for TalkNet if needed
+    if REQUEST_SAVE_DIR:
+        os.makedirs(REQUEST_SAVE_DIR, exist_ok=True)
+        # Create all TalkNet subdirectories for isolation
+        os.makedirs(os.path.join(REQUEST_SAVE_DIR, "pyavi"), exist_ok=True)
+        os.makedirs(os.path.join(REQUEST_SAVE_DIR, "pycrop"), exist_ok=True)
+        os.makedirs(os.path.join(REQUEST_SAVE_DIR, "pyframes"), exist_ok=True)
+        os.makedirs(os.path.join(REQUEST_SAVE_DIR, "pywork"), exist_ok=True)
+    
     import sys
     if input_path and input_path.strip():
         sys.argv = ["reelsfy.py", "-f", input_path, "--export-mode"]
@@ -3883,7 +3961,7 @@ def download_logos_from_styling_files(segments):
     print("📥 Checking and downloading logos from Supabase...")
     
     for segment_index in segments:
-        styling_file = f"tmp/styling_data_{segment_index:03}.json"
+        styling_file = os.path.join(get_tmp_dir(), f"styling_data_{segment_index:03}.json")
         
         if not os.path.exists(styling_file):
             print(f"   ⚠️  No styling file found for segment {segment_index}")
@@ -3913,7 +3991,7 @@ def download_logos_from_styling_files(segments):
                 try:
                     response = requests.get(logo_url, timeout=30)
                     if response.status_code == 200:
-                        local_logo_path = f"tmp/logo_{segment_index:03}.png"
+                        local_logo_path = os.path.join(get_tmp_dir(), f"logo_{segment_index:03}.png")
                         with open(local_logo_path, "wb") as f:
                             f.write(response.content)
                         
@@ -3931,7 +4009,7 @@ def download_logos_from_styling_files(segments):
                     print(f"   💡 Tip: Logo should be downloaded by api.py, checking if local file exists...")
                     
                     # Check if api.py already downloaded it
-                    local_logo_path = f"tmp/logo_{segment_index:03}.png"
+                    local_logo_path = os.path.join(get_tmp_dir(), f"logo_{segment_index:03}.png")
                     if os.path.exists(local_logo_path):
                         print(f"   ✅ Logo already downloaded by api.py: {local_logo_path}")
                         styling_data['logo']['url'] = local_logo_path
@@ -3946,9 +4024,6 @@ def download_logos_from_styling_files(segments):
             print(f"   ❌ Error processing logo for segment {segment_index}: {e}")
     
     print("✅ Logo download check complete")
-    
-    # Print timing report at the end of processing
-    print_timing_report()
 
 # --- Enhanced burn subtitles with styling ---
 def burn_subtitles_with_styling(input_video: str, srt_path: str, output_video: str, short_index: int):
@@ -3956,7 +4031,7 @@ def burn_subtitles_with_styling(input_video: str, srt_path: str, output_video: s
     Burn subtitles with custom styling, logo, and background music
     """
     # Read styling data from JSON file
-    styling_file = f"tmp/styling_data_{short_index:03}.json"
+    styling_file = os.path.join(get_tmp_dir(), f"styling_data_{short_index:03}.json")
     if not os.path.exists(styling_file):
         print(f"Warning: No styling data found for short {short_index}, using default")
         burn_subtitles(input_video, srt_path, output_video)
@@ -4164,20 +4239,20 @@ def burn_subtitles_with_styling(input_video: str, srt_path: str, output_video: s
                                          use_easing=True)
     
     # Step 5: Convert to ASS format for better control
-    ass_path = f"tmp/subtitles_{short_index:03}.ass"
+    ass_path = os.path.join(get_tmp_dir(), f"subtitles_{short_index:03}.ass")
     convert_srt_to_ass(srt_content, ass_path, style, font_name)
     
     print(f"   ✅ Converted to ASS format: {ass_path}")
     
     # Copy fonts to tmp directory for FFmpeg to use with ass filter
     import shutil
-    fonts_source = os.path.join("tmp", "fonts")
+    fonts_source = os.path.join(get_tmp_dir(), "fonts")
     if os.path.exists(fonts_source):
         # Copy all font files to tmp directory (same as ASS file location)
         for font_file in os.listdir(fonts_source):
             if font_file.endswith('.ttf'):
                 src = os.path.join(fonts_source, font_file)
-                dst = os.path.join("tmp", font_file)
+                dst = os.path.join(get_tmp_dir(), font_file)
                 if not os.path.exists(dst):
                     shutil.copy2(src, dst)
                     print(f"   🔤 Copied font file: {font_file}")
@@ -4242,7 +4317,7 @@ def burn_subtitles_with_styling(input_video: str, srt_path: str, output_video: s
     if music_track != 'none' and music_track:
         # Download music from URL
         music_url = f"https://clippeak.co.il/assets/{music_track}"
-        local_music_path = os.path.join('tmp', f"music_{short_index:03}_{os.path.basename(music_track)}")
+        local_music_path = os.path.join(get_tmp_dir(), f"music_{short_index:03}_{os.path.basename(music_track)}")
         
         # Download music file if not already cached
         if not os.path.exists(local_music_path):

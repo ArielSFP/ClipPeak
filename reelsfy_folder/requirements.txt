@@ -1,4 +1,4 @@
-pytube
+# pytube  # Removed - not used (YouTube download was only for CLI, API always uses local files)
 opencv-python
 openai
 # git+https://github.com/m1guelpf/auto-subtitle.git
