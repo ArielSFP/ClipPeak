@@ -328,7 +328,7 @@ async def create_signed_url(payload: dict, request: Request):
     """
     Create signed URL for GCS file (called from frontend storageClient).
     Validates Supabase session token before allowing access.
-    Used for temporary access to private files.
+    Used for temporary access to private files (downloads).
     """
     try:
         # Validate Supabase authentication
@@ -364,12 +364,68 @@ async def create_signed_url(payload: dict, request: Request):
         # Import storage client
         from storage_client import storage_client
         
-        # Create signed URL
-        signed_url = storage_client.create_signed_url(bucket, path, expiration_seconds)
+        # Create signed URL for GET (downloads)
+        signed_url = storage_client.create_signed_url(bucket, path, expiration_seconds, method="GET")
         return {"signedUrl": signed_url}
         
     except Exception as e:
         print(f"Error creating signed URL: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e)}, 500
+
+
+@app.post("/create-upload-url")
+async def create_upload_url(payload: dict, request: Request):
+    """
+    Create signed URL for GCS file upload (PUT method).
+    Validates Supabase session token before allowing upload.
+    Frontend uploads directly to this URL, bypassing backend (no GPU costs).
+    """
+    try:
+        # Validate Supabase authentication
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return {"error": "Missing or invalid Authorization header"}, 401
+        
+        token = auth_header.replace("Bearer ", "")
+        try:
+            # Validate Supabase session token
+            user_response = supabase.auth.get_user(token)
+            if not user_response or not user_response.user:
+                return {"error": "Invalid or expired session token"}, 401
+            user = user_response.user
+            print(f"✅ Authenticated user for upload URL: {user.email} ({user.id})")
+        except Exception as auth_error:
+            print(f"⚠️  Authentication failed: {auth_error}")
+            return {"error": "Authentication failed"}, 401
+        
+        bucket = payload.get("bucket")  # "videos" or "processed-videos"
+        path = payload.get("path")
+        content_type = payload.get("contentType", "application/octet-stream")
+        expiration_seconds = payload.get("expirationSeconds", 3600)  # 1 hour default
+        
+        if not bucket or not path:
+            return {"error": "Missing parameters: bucket and path are required"}, 400
+        
+        # For videos bucket, ensure path matches user ID (security check)
+        if bucket == "videos":
+            expected_user_id = user.id
+            path_parts = path.split("/")
+            if len(path_parts) < 2 or path_parts[0] != expected_user_id:
+                print(f"⚠️  Security: User {user.id} tried to get upload URL for path {path} (expected {expected_user_id}/...)")
+                return {"error": "Invalid path: must upload to your own folder"}, 403
+        
+        # Import storage client
+        from storage_client import storage_client
+        
+        # Create signed URL for PUT (upload)
+        signed_url = storage_client.create_signed_url(bucket, path, expiration_seconds, method="PUT")
+        print(f"✅ Generated upload signed URL for {path} in {bucket} bucket")
+        return {"signedUrl": signed_url, "path": path}
+        
+    except Exception as e:
+        print(f"Error creating upload URL: {e}")
         import traceback
         traceback.print_exc()
         return {"error": str(e)}, 500
@@ -571,22 +627,22 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
     os.makedirs(os.path.join(unique_save_dir, "pyframes"), exist_ok=True)
     os.makedirs(os.path.join(unique_save_dir, "pywork"), exist_ok=True)
 
-    # 1) Download original video from Supabase Storage
+    # 1) Download original video from GCS
     print("\n" + "="*60)
-    print("STAGE: Download original video from Supabase Storage")
+    print("STAGE: Download original video from GCS")
     print("="*60)
-    print("▶️  RUNNING: Download original video from Supabase Storage (auto-continue mode)\n")
+    print("▶️  RUNNING: Download original video from GCS (auto-continue mode)\n")
     
     update_progress(video_id, 0, "מוריד סרטון מקורי...")
     local_in = os.path.join(unique_tmp_dir, os.path.basename(file_key))
-    data = supabase.storage.from_(bucket).download(file_key)
-    if isinstance(data, bytes):
-        with open(local_in, "wb") as f:
-            f.write(data)
-    else:
-        content = data.read() if hasattr(data, "read") else data
-        with open(local_in, "wb") as f:
-            f.write(content)
+    
+    # Import storage client
+    from storage_client import storage_client
+    
+    # Download from GCS
+    video_data = storage_client.download(bucket, file_key)
+    with open(local_in, "wb") as f:
+        f.write(video_data)
     print(f"Downloaded: {local_in}")
 
     # 2) Process with reelsfy logic (stops before burning subtitles)
@@ -649,19 +705,20 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
 
     # 3) Upload processed results (videos + SRTs, but NOT final_xxx.mp4)
     print("\n" + "="*60)
-    print("STAGE: Upload processed results to Supabase Storage")
+    print("STAGE: Upload processed results to GCS")
     print("="*60)
-    print("▶️  RUNNING: Upload processed results to Supabase Storage (auto-continue mode)\n")
+    print("▶️  RUNNING: Upload processed results to GCS (auto-continue mode)\n")
     
     update_progress(video_id, 90, "מעלה קבצים מעובדים...")
     print("Uploading files to processed-videos bucket...")
     
+    # Import storage client
+    from storage_client import storage_client
+    
     # Upload content.txt to {user_id}/{video_folder_name}/content.txt
     if os.path.exists(content_txt_path):
         content_dest_path = f"{video_output_dir}/content.txt"
-        supabase.storage.from_("processed-videos").upload(
-            content_dest_path, content_txt_path
-        )
+        storage_client.upload_from_file("processed-videos", content_dest_path, content_txt_path)
         print(f"Uploaded content.txt to {content_dest_path}")
     else:
         print(f"⚠️  Did not find content.txt at {content_txt_path}")
@@ -676,7 +733,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
                 fname == "output_cropped000.srt"):
                 local_path = os.path.join(unique_tmp_dir, fname)
                 dest_path = f"{video_output_dir}/{fname}"
-                supabase.storage.from_("processed-videos").upload(dest_path, local_path)
+                storage_client.upload_from_file("processed-videos", dest_path, local_path)
                 print(f"Uploaded {fname}")
         else:
             # Regular video: upload all output_cropped files
@@ -687,7 +744,7 @@ def run_reelsfy(bucket: str, file_key: str, user_email: str, settings: dict = No
                 fname.startswith("output_nosilence") and fname.endswith(".srt")):
                 local_path = os.path.join(unique_tmp_dir, fname)
                 dest_path = f"{video_output_dir}/{fname}"
-                supabase.storage.from_("processed-videos").upload(dest_path, local_path)
+                storage_client.upload_from_file("processed-videos", dest_path, local_path)
                 print(f"Uploaded {fname}")
     print("Finished uploading files")
 
@@ -966,10 +1023,11 @@ def clear_tmp_export_artifacts(tmp_dir: str):
                 print(f"⚠️  Could not remove {path}: {exc}")
 
 
-def delete_supabase_file(storage_path: str):
-    """Best-effort delete for a processed-videos file."""
+def delete_gcs_file(storage_path: str):
+    """Best-effort delete for a processed-videos file in GCS."""
     try:
-        supabase.storage.from_("processed-videos").remove([storage_path])
+        from storage_client import storage_client
+        storage_client.delete("processed-videos", storage_path)
         print(f"🗑️  Removed existing file (if any): {storage_path}")
     except Exception as exc:
         message = str(exc).lower()
@@ -980,24 +1038,44 @@ def delete_supabase_file(storage_path: str):
 
 
 def upload_with_overwrite(dest_path: str, payload, file_options=None, description: str = ""):
-    """Upload to Supabase storage after ensuring previous versions are deleted."""
-    delete_supabase_file(dest_path)
-
-    options = dict(file_options or {})
-    options.setdefault("upsert", "true")
-
-    def _attempt_upload():
-        return supabase.storage.from_("processed-videos").upload(dest_path, payload, options)
+    """
+    Upload to GCS storage after ensuring previous versions are deleted.
+    
+    Args:
+        dest_path: Destination path in bucket
+        payload: Either a local file path (str) or bytes content
+        file_options: Optional dict with content-type, etc. (for compatibility)
+        description: Description for logging
+    """
+    from storage_client import storage_client
+    
+    # Delete existing file if it exists
+    delete_gcs_file(dest_path)
 
     try:
-        _attempt_upload()
+        # Determine if payload is a file path or bytes
+        content_type = file_options.get("content-type") if file_options else None
+        
+        if isinstance(payload, str) and os.path.exists(payload):
+            # Payload is a local file path
+            storage_client.upload_from_file("processed-videos", dest_path, payload, content_type=content_type)
+        elif isinstance(payload, bytes):
+            # Payload is bytes content
+            storage_client.upload_from_bytes("processed-videos", dest_path, payload, content_type=content_type)
+        else:
+            raise ValueError(f"Invalid payload type: {type(payload)}. Expected file path (str) or bytes.")
+        
         print(f"📤 Uploaded {description or dest_path}")
     except Exception as exc:
+        # For GCS, retry after delete if upload fails
         message = str(exc)
-        if "Duplicate" in message or "409" in message or "already exists" in message.lower():
+        if "already exists" in message.lower() or "409" in message:
             print(f"⚠️  Duplicate detected for {dest_path}, retrying after forced delete...")
-            delete_supabase_file(dest_path)
-            _attempt_upload()
+            delete_gcs_file(dest_path)
+            if isinstance(payload, str) and os.path.exists(payload):
+                storage_client.upload_from_file("processed-videos", dest_path, payload, content_type=content_type)
+            elif isinstance(payload, bytes):
+                storage_client.upload_from_bytes("processed-videos", dest_path, payload, content_type=content_type)
             print(f"📤 Uploaded {description or dest_path} after retry")
         else:
             raise
@@ -1069,20 +1147,17 @@ def run_export_processing(
         for short_data in export_data.get('shorts', []):
             short_index = short_data.get('shortIndex', 0)
             
-            # Download the silence-cut video (output_cropped{xxx}.mp4)
+            # Download the silence-cut video (output_cropped{xxx}.mp4) from GCS
             silence_video_key = f"{video_output_dir}/output_cropped{short_index:03}.mp4"
             print(f"Debug: Attempting to download from '{silence_video_key}'")
             try:
-                video_data = supabase.storage.from_("processed-videos").download(silence_video_key)
+                from storage_client import storage_client
+                
+                video_data = storage_client.download("processed-videos", silence_video_key)
                 local_video_path = os.path.join(unique_tmp_dir_export, f"output_cropped{short_index:03}.mp4")
                 
-                if isinstance(video_data, bytes):
-                    with open(local_video_path, "wb") as f:
-                        f.write(video_data)
-                else:
-                    content = video_data.read() if hasattr(video_data, "read") else video_data
-                    with open(local_video_path, "wb") as f:
-                        f.write(content)
+                with open(local_video_path, "wb") as f:
+                    f.write(video_data)
                 
                 print(f"Downloaded {local_video_path}")
                 
@@ -1127,20 +1202,17 @@ def run_export_processing(
                 else:
                     print(f"⚠️ [API] No textbox position data received for short {short_index}")
                 
-                # 5) Download logo if exists
+                # 5) Download logo if exists from GCS
                 logo_url = styling_data.get("logo", {}).get("url", "")
                 if logo_url:
                     try:
-                        logo_data = supabase.storage.from_("processed-videos").download(logo_url)
+                        from storage_client import storage_client
+                        
+                        logo_data = storage_client.download("processed-videos", logo_url)
                         local_logo_path = os.path.join(unique_tmp_dir_export, f"logo_{short_index:03}.png")
                         
-                        if isinstance(logo_data, bytes):
-                            with open(local_logo_path, "wb") as f:
-                                f.write(logo_data)
-                        else:
-                            content = logo_data.read() if hasattr(logo_data, "read") else logo_data
-                            with open(local_logo_path, "wb") as f:
-                                f.write(content)
+                        with open(local_logo_path, "wb") as f:
+                            f.write(logo_data)
                         
                         # Update styling data with local logo path
                         styling_data["logo"]["url"] = local_logo_path
@@ -1184,8 +1256,8 @@ def run_export_processing(
             
             return
         
-        # 7) Upload final videos and edited SRT files
-        print("Uploading final videos to Supabase Storage...")
+        # 7) Upload final videos and edited SRT files to GCS
+        print("Uploading final videos to GCS...")
         
         # Build a mapping of shortIndex to short data for easy lookup
         shorts_map = {short_data.get('shortIndex', 0): short_data for short_data in export_data.get('shorts', [])}
@@ -1225,7 +1297,8 @@ def run_export_processing(
                     print(f"⚠️  Could not parse short index from filename {fname}: {e}")
                     # Fall back to original filename
                     dest_path = f"{video_output_dir}/{fname}"
-                    supabase.storage.from_("processed-videos").upload(dest_path, local_path)
+                    from storage_client import storage_client
+                    storage_client.upload_from_file("processed-videos", dest_path, local_path)
                     print(f"Uploaded final video: {fname}")
         
         # Upload edited SRT files with title-based names

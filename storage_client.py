@@ -11,9 +11,9 @@ class StorageClient:
     """Abstraction layer for storage operations - GCS implementation."""
     
     def __init__(self):
-        # GCS bucket names from environment
-        self.videos_bucket_name = os.environ.get("GCS_VIDEOS_BUCKET", "clippeak-videos")
-        self.processed_bucket_name = os.environ.get("GCS_PROCESSED_BUCKET", "clippeak-processed-videos")
+        # GCS bucket names (hardcoded)
+        self.videos_bucket_name = "clippeak-videos"
+        self.processed_bucket_name = "clippeak-processed-videos"
         
         # Initialize GCS client (uses default credentials or GOOGLE_APPLICATION_CREDENTIALS)
         self.client = storage.Client()
@@ -115,7 +115,7 @@ class StorageClient:
         blob = bucket.blob(file_key)
         return blob.public_url
     
-    def create_signed_url(self, bucket_name: str, file_key: str, expiration_seconds: int = 3600) -> str:
+    def create_signed_url(self, bucket_name: str, file_key: str, expiration_seconds: int = 3600, method: str = "GET") -> str:
         """
         Create a signed URL for temporary access.
         
@@ -123,6 +123,7 @@ class StorageClient:
             bucket_name: "videos" or "processed-videos"
             file_key: Path to file in bucket
             expiration_seconds: URL expiration time in seconds (default: 1 hour)
+            method: HTTP method ("GET" for downloads, "PUT" for uploads)
         
         Returns:
             str: Signed URL
@@ -135,7 +136,7 @@ class StorageClient:
         return blob.generate_signed_url(
             version="v4",
             expiration=timedelta(seconds=expiration_seconds),
-            method="GET"
+            method=method
         )
     
     def exists(self, bucket_name: str, file_key: str) -> bool:

@@ -8,7 +8,7 @@
 # 5. Remove silence from each segment (using ffmpeg silencedetect)
 # 6. Crop to 9:16 with simplified face tracking (tracks talking face, 85% deadzone)
 # 7. Retranscribe segments (for accurate timestamps after silence removal)
-# 8. Upload to Supabase for user to burn subtitles in video edit page
+# 8. Upload to GCS (processed-videos bucket) for user to burn subtitles in video edit page
 #
 # SHORT VIDEO MODE Workflow (videos < 3 minutes):
 # 1. Download/copy video
@@ -16,7 +16,7 @@
 # 3. Transcribe (with accurate timestamps)
 # 4. GPT analysis for styling (colored words, zoom, title, description)
 # 5. Crop to 9:16 if needed (simplified face tracking)
-# 6. Upload to Supabase for user to burn subtitles
+# 6. Upload to GCS (processed-videos bucket) for user to burn subtitles
 #
 # Features:
 # - GPU-accelerated FFmpeg NVENC for video processing
@@ -632,12 +632,32 @@ def parse_srt(srt_path: str):
     return entries
 
 def write_srt_entries(entries, srt_path: str, rtl_wrap: bool = True):
+    """
+    Write SRT entries to file (optimized: build in memory, write once).
+    
+    Performance: O(n) where n = number of entries
+    - Building list: O(n) with O(1) appends
+    - Joining: O(n) but highly optimized in Python
+    - Single file write: O(1) I/O operation
+    
+    Previous approach: O(n) file I/O operations (slow)
+    Current approach: O(1) file I/O operation (fast)
+    """
+    # Build SRT content in memory using list (O(1) append per entry)
+    srt_lines = []
+    for i, e in enumerate(entries, 1):
+        text = e["text"]
+        if rtl_wrap and text and dominant_strong_direction(text) == 'rtl':
+            text = f"\u202b{text}\u202c"
+        
+        # Append SRT entry lines (O(1) per append)
+        srt_lines.append(f"{i}\n")
+        srt_lines.append(f"{sec_to_srt_ts(e['start'])} --> {sec_to_srt_ts(e['end'])}\n")
+        srt_lines.append(f"{text}\n\n")
+    
+    # Write entire content to file in one operation (single I/O call)
     with open(srt_path, 'w', encoding='utf-8') as f:
-        for i, e in enumerate(entries, 1):
-            text = e["text"]
-            if rtl_wrap and text and dominant_strong_direction(text) == 'rtl':
-                text = f"\u202b{text}\u202c"
-            f.write(f"{i}\n{sec_to_srt_ts(e['start'])} --> {sec_to_srt_ts(e['end'])}\n{text}\n\n")
+        f.write(''.join(srt_lines))
 
 def trim_video_start_by_first_subtitle(video_path: str, srt_path: str, tolerance: float = 0.15) -> tuple:
     """
@@ -918,21 +938,27 @@ def create_word_level_srt(segment_list, srt_path):
                     "text": token.strip()
                 })
 
-    # Write word-level SRT file
+    # Write word-level SRT file (optimized: build in memory, write once)
     if entries:
+        # Build SRT content in memory using list (O(1) append per entry)
+        srt_lines = []
+        for i, entry in enumerate(entries, 1):
+            start_time = format_timestamp_srt(entry["start"])
+            end_time = format_timestamp_srt(entry["end"])
+            text = entry["text"]
+            
+            # Apply RTL wrapping if needed
+            if text and dominant_strong_direction(text) == 'rtl':
+                text = f"\u202b{text}\u202c"
+            
+            # Append SRT entry lines (O(1) per append)
+            srt_lines.append(f"{i}\n")
+            srt_lines.append(f"{start_time} --> {end_time}\n")
+            srt_lines.append(f"{text}\n\n")
+        
+        # Write entire content to file in one operation (single I/O call)
         with open(srt_path, 'w', encoding='utf-8') as f:
-            for i, entry in enumerate(entries, 1):
-                start_time = format_timestamp_srt(entry["start"])
-                end_time = format_timestamp_srt(entry["end"])
-                text = entry["text"]
-                
-                # Apply RTL wrapping if needed
-                if text and dominant_strong_direction(text) == 'rtl':
-                    text = f"\u202b{text}\u202c"
-                
-                f.write(f"{i}\n")
-                f.write(f"{start_time} --> {end_time}\n")
-                f.write(f"{text}\n\n")
+            f.write(''.join(srt_lines))
         
         print(f"✅ Created word-level SRT: {srt_path} ({len(entries)} word entries)")
     else:
@@ -3817,8 +3843,8 @@ def main():
         # Download logos and burn subtitles with styling
         print("Export mode: Processing existing files for subtitle and logo burning")
         
-        # Step 1: Download logos from Supabase if needed
-        log_stage("Download logos from Supabase (if needed)")
+        # Step 1: Download logos from storage (GCS) if needed (api.py typically does this, this is fallback)
+        log_stage("Download logos from storage (if needed)")
         download_logos_from_styling_files(segments)
         
         # Step 2: Burn subtitles with styling (includes logo burning)
@@ -3951,9 +3977,10 @@ def process_export_file(input_path: str, out_dir: str = "tmp", tmp_dir: str = No
         sys.argv = ["reelsfy.py", "--export-mode"]
     main()
 
-# --- Helper function to download logos from Supabase ---
+# --- Helper function to download logos from storage (GCS) ---
 def download_logos_from_styling_files(segments):
-    """Download logos from Supabase storage if they're not already local files."""
+    """Download logos from storage (GCS) if they're not already local files. 
+    Note: api.py typically downloads logos before calling this, so this is mainly a fallback check."""
     import json
     import requests
     
@@ -3982,9 +4009,9 @@ def download_logos_from_styling_files(segments):
                 print(f"   ✅ Logo already exists locally for segment {segment_index}: {logo_url}")
                 continue
             
-            # If it's a Supabase URL, download it
-            if 'supabase.co' in logo_url or 'supabase' in logo_url.lower():
-                print(f"   📥 Downloading logo from Supabase for segment {segment_index}...")
+            # If it's a storage URL (GCS or Supabase), download it (fallback - api.py should have already downloaded it)
+            if 'supabase.co' in logo_url or 'supabase' in logo_url.lower() or 'storage.googleapis.com' in logo_url or 'googleapis.com' in logo_url:
+                print(f"   📥 Downloading logo from storage for segment {segment_index}...")
                 
                 # Try to download using requests (for public URLs)
                 try:
