@@ -16,3 +16,7 @@ __pycache__/
 .env
 .env.local
 *.md
+# Service account keys (NEVER commit these!)
+*service-account*.json
+clippeak-signing-key.json
+*key*.json
