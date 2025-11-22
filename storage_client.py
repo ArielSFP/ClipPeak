@@ -157,11 +157,9 @@ class StorageClient:
             "type": "service_account",
             "project_id": "flash-rock-470212-d5",
             "private_key_id": "79a72ca162e16b09b3fd0d8dcf39fb58b66cc570",
-            # ⚠️ REPLACE THIS with the complete private_key from your clippeak-signing-key.json file
-            # Copy the ENTIRE value from the "private_key" field - it's a very long string
-            # It should include ALL lines between BEGIN and END markers
-            # IMPORTANT: Keep the \n characters for newlines - just paste the key as-is from JSON
-            "private_key": "",  # Paste your complete private_key here
+            # Hardcoded private key from clippeak-signing-key.json
+            # ⚠️ SECURITY: This is hardcoded for convenience - consider using env var or Secret Manager in production
+            "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCiyNn8XqQXpze0\nXFYEssbhQXqSE6aAGGF4FHyw9XaAU417o16CnHz0xvVnwf9WV3ARPLNrg5fG/uMa\nkYMKpjJV9r6BF9bGkxJmoRTLCdaU9f1ovRR5FAriRWyJHCdXCagUtUbGm7/Y1vMs\nsf00UFgm7fDYgdJKBO3b8gOWEnFKfXcgWgvCgf0HGy8udfcCZQAV+dra3s3KPJiW\nBd8vntVRTRbv4yq6Hw1l5sJmluWIMWL9zBOUOWoBO6hE0OTChcKz9vMN0RNQ1gpc\nm1asy4n/RWfYSQmH5OBbROtZliobmsW6tHbP073y87I5AOPDGnzE6o7Iwun5Vw/8\nmYYhbz0pAgMBAAECggEARTJQ62UFpuJXnQ0lKZEfVnCBnGfK/qeegy9eQ9DMA0fB\nHD35dlb0DQ8oEWeXVUoM4t7lO/4vvhDqVAhn5lZ4ji85kuGh1D5/c23ky1xOwXqB\nsoyxj7hz2fR96xizJl39+3OFdvaNCi1xKF4uzpaaqk259CbXT8yhmb3aRWhojStz\npgHHbM8x734dkeSugotg0pokiECG+PHx8AHjx46kgOK+SOmDWM/4+Bq54lBxBpvB\nBxABtITYFMa2NkIJvmQa027vjMCqix1rOnQvxmIwHfvS4IHe3ZkD0JXxTHr7WtDV\nzVbTo++Dmjx5hmTtvrSL/65QzwEmWzvIFF+9McLbUwKBgQDRG1vwMxNxLmuMsGR+\nnHrj4PqhdJf9QnqwJO9pgd34Njwhn6cTH6VnfbNq9ZWgRCh2gkAESLABjIaxYQDA\n1Lo7h0wjEhsENFHCeCrl7Pkl8YVlU3srAmqim0qD/SKikDZbMFLcVxfEDNkP1mAu\njC1b6z80RMp4GDpCw+9fFzFOJwKBgQDHSiuYZWPCqKq8e/rewEFntgdeif2CbkRg\n8QEbEEXElqMUjQ5SkXGa16h0ZFWjkzY8JEarPeUQ1ItBGllmncMi3k2Yq9AW7vmU\nO8xMkzLu/omm3vG9paCaTIoy7FInzGn5gF0ehPa8nPYMoOZCp6vyX5F7MJBxETG5\nCR7z0aF8LwKBgQDF5rfPj/dhkcZV44do0J351648agWCuo008e/oEfHK/UFRrTDJ\nh5TaanwIyZ6vjHIjHsiJhWWWQbIkZCL7XRlYR4dGVddd1kpe2631554xS/Cs4iJa\npTHY7VHLsyI5anUXPpfdU0v5zxMLyx9CToaLTQyHYmeg24UgNSHyBBg01wKBgDOi\nT/FIM7S3pqT3KmSUQ13vl7Ey52/nyeekCblNWgY5UT993HwgGuMXhRnC9T1QYvjq\nHTU48CSQLRRNE2S281wRZOFtgpiuihOR+rjMWqH5aQjHMrMEOrw/oH7ZI+AT4lE2\npOnHYXY05LsY5Q/YCYDeqf7U8leZMNzUNCTP55sZAoGAGY9J1PHjKv0dm7AX0wl0\n9lzzxGMA6ar7OUtNSIcbg3MwYeEVtTnvaKmFZgPnVgjhwmHLWUgcX3qzek1iV7+x\nVHD+D5T/HhFccXdYwsNRd8lCkhKzPsJ2NO+ILeZRrYHUBRLUSpxcqnAz8OfINvTC\nCu8ZhM+jbXB4bsnD9TwjzJY=\n-----END PRIVATE KEY-----\n",
             "client_email": "clippeak-signing@flash-rock-470212-d5.iam.gserviceaccount.com",
             "client_id": "111976950819230532180",
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
