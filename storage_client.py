@@ -115,7 +115,7 @@ class StorageClient:
         blob = bucket.blob(file_key)
         return blob.public_url
     
-    def create_signed_url(self, bucket_name: str, file_key: str, expiration_seconds: int = 3600, method: str = "GET") -> str:
+    def create_signed_url(self, bucket_name: str, file_key: str, expiration_seconds: int = 3600, method: str = "GET", content_type: str = None) -> str:
         """
         Create a signed URL for temporary access.
         
@@ -124,6 +124,7 @@ class StorageClient:
             file_key: Path to file in bucket
             expiration_seconds: URL expiration time in seconds (default: 1 hour)
             method: HTTP method ("GET" for downloads, "PUT" for uploads)
+            content_type: Content type for PUT uploads (required for browser uploads)
         
         Returns:
             str: Signed URL
@@ -133,11 +134,21 @@ class StorageClient:
         bucket = self.videos_bucket if bucket_name == "videos" else self.processed_bucket
         blob = bucket.blob(file_key)
         
-        return blob.generate_signed_url(
-            version="v4",
-            expiration=timedelta(seconds=expiration_seconds),
-            method=method
-        )
+        # For PUT uploads, we need to specify content-type in the signature
+        # This ensures the browser can upload with the correct content-type header
+        if method == "PUT" and content_type:
+            return blob.generate_signed_url(
+                version="v4",
+                expiration=timedelta(seconds=expiration_seconds),
+                method=method,
+                content_type=content_type
+            )
+        else:
+            return blob.generate_signed_url(
+                version="v4",
+                expiration=timedelta(seconds=expiration_seconds),
+                method=method
+            )
     
     def exists(self, bucket_name: str, file_key: str) -> bool:
         """

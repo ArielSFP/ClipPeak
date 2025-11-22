@@ -419,10 +419,24 @@ async def create_upload_url(payload: dict, request: Request):
         # Import storage client
         from storage_client import storage_client
         
-        # Create signed URL for PUT (upload)
-        signed_url = storage_client.create_signed_url(bucket, path, expiration_seconds, method="PUT")
+        # Create signed URL for PUT (upload) with content-type
+        # Content-type must be included in the signature for browser uploads to work
+        # CRITICAL: The exact content-type string used here must match what the browser sends
+        print(f"🔑 Generating signed URL with content-type: '{content_type}' for path: {path}")
+        
+        signed_url = storage_client.create_signed_url(
+            bucket, 
+            path, 
+            expiration_seconds, 
+            method="PUT",
+            content_type=content_type
+        )
+        
         print(f"✅ Generated upload signed URL for {path} in {bucket} bucket")
-        return {"signedUrl": signed_url, "path": path}
+        print(f"   Content-type in signature: '{content_type}'")
+        print(f"   Expiration: {expiration_seconds} seconds")
+        
+        return {"signedUrl": signed_url, "path": path, "contentType": content_type}
         
     except Exception as e:
         print(f"Error creating upload URL: {e}")
